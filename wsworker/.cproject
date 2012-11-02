@@ -41,6 +41,7 @@
 								<option defaultValue="true" id="gnu.c.link.so.debug.option.shared.347564573" name="Shared (-shared)" superClass="gnu.c.link.so.debug.option.shared" valueType="boolean"/>
 								<option id="gnu.c.link.option.libs.1001522715" name="Libraries (-l)" superClass="gnu.c.link.option.libs" valueType="libs">
 									<listOptionValue builtIn="false" value="wscommon"/>
+									<listOptionValue builtIn="false" value="zlog"/>
 									<listOptionValue builtIn="false" value="czmq"/>
 									<listOptionValue builtIn="false" value="zmq"/>
 									<listOptionValue builtIn="false" value="uuid"/>
