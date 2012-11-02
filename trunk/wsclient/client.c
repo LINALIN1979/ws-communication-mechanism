@@ -218,12 +218,8 @@ client_create (char *dispatcher)
 {
     if(!dispatcher)	return NULL;
 
-    if(zlog_init("log.conf")) {
-		printf("zlog_init() failed, please put log.conf in the same folder\n");
-		return NULL;
-	}
-
     client_t *self = (client_t *)zmalloc(sizeof(client_t));
+    zlog_init("log.conf");
     self->log = zlog_get_category("client");
 	if(!self->log)
 		printf("zlog_get_category() failed\n");
