@@ -368,13 +368,8 @@ worker_create(char *name, char *dispatcher, worker_oplong_fn *oplong, worker_ops
 {
 	if(dispatcher == NULL || name == NULL) return NULL;
 
-	if(zlog_init("log.conf")) {
-		printf("zlog_init() failed, please put log.conf in the same folder\n");
-		return NULL;
-	}
-
 	worker_t *self = (worker_t *)zmalloc(sizeof(worker_t));
-	assert(self);
+	zlog_init("log.conf");
 	self->log = zlog_get_category("worker");
 	if(!self->log)
 		printf("zlog_get_category() failed\n");
@@ -497,7 +492,7 @@ worker_update(worker_t *self, char *taskid, unsigned int percentage)
 
 		char *buf = uitoa(percentage);
 		if(buf) {
-			zlog_info(self->log, "Update percentage %3u%% to task [%s]", percentage, taskid);
+			zlog_info(self->log, "Update percentage %3u%s to task [%s]", percentage, (percentage != TASK_FAIL) ? "%%" : "", taskid);
 			//sendcmd(self->send_lock, self->log, self->ipcBindSocket, WORKER, TASKUPDATE, 2, taskid, buf);
 			sendcmd(self->send_lock, self->log, self->socket, WORKER, TASKUPDATE, 2, taskid, buf);
 			free(buf);
