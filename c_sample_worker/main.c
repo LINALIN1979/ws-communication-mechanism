@@ -3,18 +3,24 @@
 					// remove "-ansi" from compiler option
 
 #include "../wsworker/worker.h"
+#include "../wsclient/client.h"
 #include <signal.h>
 
-worker_t *session = NULL;
+#define CLIENT 	0
+
+worker_t *worker = NULL;
+#if CLIENT
+client_t *client = NULL;
+#endif
 
 // fake update
 void *sleep_then_return(void *ptr)
 {
-	if(session) {
+	if(worker) {
 		char *taskid = (char *)ptr;
 		for(unsigned int status = 10; status <= 100; status += 10) {
 			zclock_sleep(700);
-			worker_update(session, taskid, status); // percentage
+			worker_update(worker, taskid, status); // percentage
 		}
 		free(taskid);
 	}
@@ -54,8 +60,13 @@ char* opshort(char *method, char *data)
 
 void my_handler(int s)
 {
-	printf("SIGINT received, terminate the worker.\n");
-	worker_destroy(&session);
+	printf("SIGINT received...\n");
+	printf(" Terminate the worker\n");
+	worker_destroy(&worker);
+#if CLIENT
+	printf(" Terminate the client\n");
+	client_destroy(&client);
+#endif
 	exit(0);
 }
 
@@ -66,25 +77,75 @@ int main (int argc, char *argv [])
 		return 0;
 	}
 
-	session = worker_create(argv[2], argv[1], &oplong, &opshort);
-	if(!session) {
+	worker = worker_create(argv[2], argv[1], &oplong, &opshort);
+	if(!worker) {
 		printf("WTF! why there is no worker created?\n");
-		return -1;
+		goto err;
 	}
-	else {
-		struct sigaction sigIntHandler;
-		sigIntHandler.sa_handler = &my_handler;
-		sigemptyset(&sigIntHandler.sa_mask);
-		sigIntHandler.sa_flags = 0;
-		sigaction(SIGINT, &sigIntHandler, NULL);
+#if CLIENT
+	client = client_create(argv[1]);
+	if(!client) {
+		printf("WTF! why there is no client created?\n");
+		goto err;
 	}
+#endif
+
+	struct sigaction sigIntHandler;
+	sigIntHandler.sa_handler = &my_handler;
+	sigemptyset(&sigIntHandler.sa_mask);
+	sigIntHandler.sa_flags = 0;
+	sigaction(SIGINT, &sigIntHandler, NULL);
+
+#if CLIENT
+	zclock_sleep(5000);
+	printf("oplong: ");
+	char *taskid = client_oplong(client, "time.1", "method:time", "what time is it?");
+	if(taskid) {
+		int quit = 0;
+		unsigned int percentage;
+		while(!quit) {
+			zclock_sleep(700);
+			percentage = client_querytask(client, taskid);
+			switch(percentage)
+			{
+			case 100:
+				printf(" Task done!\n");
+				quit = 1;
+				break;
+
+			case TASK_NOTFOUND:
+				printf(" Task not found!\n");
+				quit = 1;
+				break;
+
+			case TASK_FAIL:
+				printf(" Task failed!\n");
+				quit = 1;
+				break;
+
+			default:
+				printf(" %d\n", percentage);
+				break;
+			}
+		}
+	}
+
+	printf("opshort: ");
+	char *ret = client_opshort(client, "time", "method:time", "what time is it?");
+	if(ret)	printf("%s\n", ret);
+	else	printf("fail\n");
+#endif
 
 	while(1) {
 		zclock_sleep(1000 * 60);
 	}
+	return 0;
 
-//	zclock_sleep(15000);
-	worker_destroy(&session);
+err:
+	worker_destroy(&worker);
+#if CLIENT
+	client_destroy(&client);
+#endif
 
-    return 0;
+    return -1;
 }
