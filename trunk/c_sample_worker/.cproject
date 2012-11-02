@@ -34,6 +34,7 @@
 							<tool command="gcc" commandLinePattern="${COMMAND} ${FLAGS} ${OUTPUT_FLAG} ${OUTPUT_PREFIX}${OUTPUT} ${INPUTS}" id="cdt.managedbuild.tool.gnu.c.linker.exe.debug.99782431" name="GCC C Linker" superClass="cdt.managedbuild.tool.gnu.c.linker.exe.debug">
 								<option id="gnu.c.link.option.libs.549574649" name="Libraries (-l)" superClass="gnu.c.link.option.libs" valueType="libs">
 									<listOptionValue builtIn="false" value="wsworker"/>
+									<listOptionValue builtIn="false" value="wsclient"/>
 								</option>
 								<option id="gnu.c.link.option.paths.547735590" name="Library search path (-L)" superClass="gnu.c.link.option.paths" valueType="libPaths">
 									<listOptionValue builtIn="false" value="&quot;${WorkspaceDirPath}/lib/&quot;"/>
@@ -86,6 +87,7 @@
 							<tool id="cdt.managedbuild.tool.gnu.c.linker.exe.release.819135088" name="GCC C Linker" superClass="cdt.managedbuild.tool.gnu.c.linker.exe.release">
 								<option id="gnu.c.link.option.libs.799082956" name="Libraries (-l)" superClass="gnu.c.link.option.libs" valueType="libs">
 									<listOptionValue builtIn="false" value="wsworker"/>
+									<listOptionValue builtIn="false" value="wsclient"/>
 								</option>
 								<option id="gnu.c.link.option.paths.1154640278" name="Library search path (-L)" superClass="gnu.c.link.option.paths" valueType="libPaths">
 									<listOptionValue builtIn="false" value="&quot;${WorkspaceDirPath}/lib/&quot;"/>
