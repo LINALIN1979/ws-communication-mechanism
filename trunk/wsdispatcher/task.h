@@ -3,6 +3,7 @@
 
 #include "zmq.h"
 #include "czmq.h"
+#include "../wscommon/utils.h"
 
 // If task idle longer than this interval (in millisecond),
 // task status will be set to FAIL
@@ -28,9 +29,12 @@ char*		task_get_workerstr(task_t *self);
 void		task_set_worker(task_t *self, zframe_t *worker);
 
 char*	task_get_taskID(task_t *self);
+timeout_t*	task_get_timeout(task_t *self);
 char*	task_get_servicename(task_t *self);
 char*	task_get_method(task_t *self);
 char*	task_get_data(task_t *self);
 int		task_get_expired(task_t *self);
+int		task_serialize(task_t *self, serialize_t *buf);
+task_t*	task_deserialize(serialize_t *buf);
 
 #endif /* TASK_H_ */
