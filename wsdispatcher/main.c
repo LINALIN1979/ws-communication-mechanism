@@ -1,6 +1,6 @@
 // TODO: secure channel
-// TODO: integrate authorization
-// TODO: thread dispatch tasks, failed, zeromq socket can't shared between threads
+// TODO: integrate authentication, authorization
+// TODO: serialization
 
 #define _GNU_SOURCE	// Due to strdup is not standard C function in string.h, add this
 					// definition to make compiler see strdup from string.h. Or to
@@ -119,12 +119,8 @@ void _sendcmd(dispatcher_t* self, zframe_t *reply_to, int arg_length, ...)
 static dispatcher_t *
 dispatcher_new()
 {
-	if(zlog_init("log.conf")) {
-		printf("zlog_init() failed, please put log.conf in the same folder\n");
-		return NULL;
-	}
-
 	dispatcher_t *self = (dispatcher_t *) zmalloc (sizeof (dispatcher_t));
+	zlog_init("log.conf");
 	self->log = zlog_get_category("dispatcher");
 	if(!self->log)
 		printf("zlog_get_category() failed\n");
@@ -476,6 +472,7 @@ process_msg_from_worker (dispatcher_t *self, zframe_t *sender, zmsg_t *msg)
     		zlog_info(self->log, "Receive SERVICEREGREQ from already existed worker [%s], disconnect it due to session corruption", hostName);
     		_sendcmd(self, worker->address, 2, cmd_code2payload(SERVICEREGREP), stat_code2payload(S_EXISTED));
     		worker_delete(worker, 1);
+    		// TODO: what will happen if two nodes to register the same name??
     		// TODO: Case 2: If we have authorization phase, should try to authorize again
     	}
 		else {
@@ -702,8 +699,69 @@ int disconnect_all_workers(const char *key, void *item, void *argument)
 	return 0;
 }
 
+void test_serialization()
+{
+	zframe_t *a = zframe_new("123", 3);
+	zframe_t *b = zframe_new("456", 3);
+	task_t *t;
+	task_t *task1 = NULL, *task2 = NULL;
+
+	task1 = task_create("serviceName", a, "method", "data", b);
+
+	if(task1) {
+		t = task1;
+		printf("task1:\n");
+		printf("  taskID = %s\n", task_get_taskID(t));
+		printf("  status = %u\n", task_get_status(t));
+		printf("  dispatched = %d\n", task_get_dispatched(t));
+		printf("  serviceName = %s\n", task_get_servicename(t));
+		printf("  method = %s\n", task_get_method(t));
+		printf("  data = %s\n", task_get_data(t));
+		printf("  client_str = %s\n", task_get_clientstr(t));
+		printf("  worker_str = %s\n", task_get_workerstr(t));
+		timeout_print(task_get_timeout(t));
+	}
+
+	serialize_t *buf = serialize_create();
+	if(buf) {
+		if(task_serialize(t, buf) == 0) {
+			char *item = serialize_bufdup(buf);
+			if(item) {
+				//printf("Buf[%d]: %s\n", (int)strlen(item) + 1, item);
+				serialize_reset(buf);
+				serialize_bufset(buf, item);
+				task2 = task_deserialize(buf);
+				free(item);
+			}
+		}
+		serialize_destroy(buf);
+	}
+
+	if(task2) {
+		t = task2;
+		printf("task2:\n");
+		printf("  taskID = %s\n", task_get_taskID(t));
+		printf("  status = %u\n", task_get_status(t));
+		printf("  dispatched = %d\n", task_get_dispatched(t));
+		printf("  serviceName = %s\n", task_get_servicename(t));
+		printf("  method = %s\n", task_get_method(t));
+		printf("  data = %s\n", task_get_data(t));
+		printf("  client_str = %s\n", task_get_clientstr(t));
+		printf("  worker_str = %s\n", task_get_workerstr(t));
+		timeout_print(task_get_timeout(t));
+	}
+
+	if(task1) task_destroy(task1);
+	if(task2) task_destroy(task2);
+
+	zframe_destroy(&a);
+	zframe_destroy(&b);
+}
+
 int main(int argc, char **argv)
 {
+	test_serialization();
+
 	if(argc != 2) {
 		printf("Usage: %s tcp://*:<port>\n", argv[0]);
 		return 1;
@@ -725,7 +783,7 @@ int main(int argc, char **argv)
 
 		//  Process next input message, if any
 		if (items [0].revents & ZMQ_POLLIN) {
-			zmsg_t *msg = zmsg_recv (self->socket);
+			zmsg_t *msg = zmsg_recv(self->socket);
 			if (!msg) break; //  Interrupted -> zctx_interrupted
 
 			zlog_debug(self->log, "Receive message");
