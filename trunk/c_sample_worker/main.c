@@ -21,11 +21,13 @@ sleep_then_return(void *ptr)
 {
 	if(worker) {
 		char *taskid = (char *)ptr;
-		for(unsigned int status = 10; status <= 100; status += 10) {
-			zclock_sleep(700);
-			worker_update(worker, taskid, status); // percentage
+		if(taskid) {
+			for(unsigned int status = 10; status <= 100; status += 10) {
+				zclock_sleep(700);
+				worker_update(worker, taskid, status); // percentage
+			}
+			free(taskid);
 		}
-		free(taskid);
 	}
 	//return NULL;
 }
@@ -65,12 +67,13 @@ fake_client_request(void *ptr)
 				break;
 			}
 		}
+		free(taskid);
 	}
 
 	printf("opshort: ");
 	char *ret = client_opshort(client, "time", "method:time", "what time is it?");
-	if(ret)	printf("%s\n", ret);
-	else	printf("fail\n");
+	if(ret)	{ printf("%s\n", ret); free(ret); }
+	else	{ printf("fail\n"); }
 }
 #endif
 
@@ -85,7 +88,6 @@ int oplong(char *taskid, char *method, char *data)
 	if(threads) {
 		if(threadpool_add(threads, &sleep_then_return, (void *)task, 0) != 0) {
 			printf("threadpool_add failed, task ID = %s\n", task);
-			FREE(task);
 		}
 	}
 	return OPLONG_ACCEPT; // or OPLONG_REJECT
@@ -121,6 +123,7 @@ void destroy()
 	printf(" Terminate the client\n");
 	client_destroy(&client);
 #endif
+	printf("Terminated...\n");
 }
 
 void my_handler(int s)
@@ -164,6 +167,7 @@ int main (int argc, char *argv [])
 			printf("Create fake_client_request failed\n");
 		}
 	}
+	else goto err;
 #endif
 
 	while(1) {
