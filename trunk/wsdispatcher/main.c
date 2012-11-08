@@ -29,7 +29,7 @@ typedef struct {
 
 #if TASKPROC_IN_MULTITHREAD
 	threadpool_t	*threads;
-	pthread_mutex_t	send_lock;
+	pthread_mutex_t	sock_lock;
 #endif
 } dispatcher_t;
 
@@ -97,7 +97,7 @@ void _sendcmd(dispatcher_t* self, zframe_t *reply_to, int arg_length, ...)
 
 #if TASKPROC_IN_MULTITHREAD
 	if(self->threads) {
-		if(pthread_mutex_lock(&(self->send_lock)) != 0) {
+		if(pthread_mutex_lock(&(self->sock_lock)) != 0) {
 			zlog_error(self->log, "Unable to lock send_mutex in _sendcmd(), do not send message");
 			return;
 		}
@@ -107,7 +107,7 @@ void _sendcmd(dispatcher_t* self, zframe_t *reply_to, int arg_length, ...)
 		zlog_error(self->log, "Failed to send in zmsg_send(), error code = %d", errno);
 #if TASKPROC_IN_MULTITHREAD
 	if(self->threads) {
-		if(pthread_mutex_unlock(&(self->send_lock)) != 0) {
+		if(pthread_mutex_unlock(&(self->sock_lock)) != 0) {
 			zlog_error(self->log,"Failed to unlock send_mutex in _sendcmd(), subsequent messages may be blocked");
 			return;
 		}
@@ -132,7 +132,7 @@ dispatcher_new()
    	self->workers = zhash_new();
     self->tasks = zhash_new();
 #if TASKPROC_IN_MULTITHREAD
-    if(pthread_mutex_init(&(self->send_lock), NULL) == 0)
+    if(pthread_mutex_init(&(self->sock_lock), NULL) == 0)
     	self->threads = threadpool_create(6, 24, 0);
 #endif
     return self;
@@ -152,7 +152,7 @@ dispatcher_destroy(dispatcher_t **self_p)
 #if TASKPROC_IN_MULTITHREAD
         if(self->threads) {
         	threadpool_destroy(self->threads, 0);
-        	pthread_mutex_destroy(&(self->send_lock));
+        	pthread_mutex_destroy(&(self->sock_lock));
         }
 #endif
         zlog_fini();
@@ -757,8 +757,9 @@ int main(int argc, char **argv)
 	zsocket_bind(self->socket, argv[1]);
 	zlog_info(self->log, "Bind to %s", argv[1]);
 
-	//  Get and process messages forever or until interrupted
-	while (1) {
+	int quit = 0;
+	// Get and process messages forever or until interrupted
+	while(!quit) {
 		zmq_pollitem_t items [] = {
 			{ self->socket,  0, ZMQ_POLLIN, 0 } };
 		int rc = zmq_poll (items, 1, HEARTBEAT_INTERVAL * ZMQ_POLL_MSEC);
@@ -766,7 +767,23 @@ int main(int argc, char **argv)
 
 		//  Process next input message, if any
 		if (items [0].revents & ZMQ_POLLIN) {
+#if TASKPROC_IN_MULTITHREAD
+			if(self->threads) {
+				if(pthread_mutex_lock(&(self->sock_lock)) != 0) {
+					zlog_error(self->log, "Unable to lock mutex for zmsg_recv(), do not receive message");
+					continue;
+				}
+			}
+#endif
 			zmsg_t *msg = zmsg_recv(self->socket);
+#if TASKPROC_IN_MULTITHREAD
+			if(self->threads) {
+				if(pthread_mutex_unlock(&(self->sock_lock)) != 0) {
+					zlog_error(self->log,"Failed to unlock mutex for zmsg_recv(), terminated...");
+					quit = 1;
+				}
+			}
+#endif
 			if (!msg) break; //  Interrupted -> zctx_interrupted
 
 			zlog_debug(self->log, "Receive message");
