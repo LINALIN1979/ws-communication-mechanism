@@ -457,7 +457,10 @@ worker_destroy(worker_t **self_p)
 //		}
 		heartbeat_destroy(&self->heartbeat);
 		zctx_destroy (&self->ctx);
-		if(self->send_lock) pthread_mutex_destroy(self->send_lock);
+		if(self->send_lock) {
+			pthread_mutex_destroy(self->send_lock);
+			free(self->send_lock);
+		}
 		FREE(self->dispatcher);
 		FREE(self->serviceName);
 		FREE(self->hostName);
