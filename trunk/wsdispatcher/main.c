@@ -142,12 +142,12 @@ dispatcher_new()
 static void
 dispatcher_destroy(dispatcher_t **self_p)
 {
-    assert (self_p);
-    if (*self_p) {
+    assert(self_p);
+    if(*self_p) {
     	dispatcher_t *self = *self_p;
-        zctx_destroy (&self->ctx);
-        zhash_destroy (&self->services);
-        zhash_destroy (&self->workers);
+        zctx_destroy(&self->ctx);
+        zhash_destroy(&self->services);
+        zhash_destroy(&self->workers);
         zhash_destroy(&self->tasks);
 #if TASKPROC_IN_MULTITHREAD
         if(self->threads) {
@@ -341,6 +341,7 @@ process_msg_from_client (dispatcher_t *self, zframe_t *sender, zmsg_t *msg)
 				// TODO: after query, if task status percentage is 100, remove it from self->tasks?
     		}
 			_sendcmd(self, sender, 3, cmd_code2payload(TASKQUERYREP), taskid, status);
+			FREE(status);
 
 			FREE(taskid);
     	}
@@ -404,6 +405,7 @@ process_msg_from_client (dispatcher_t *self, zframe_t *sender, zmsg_t *msg)
 					_sendcmd(self, sender,
 							3, cmd_code2payload(TASKDIRECTREP), token, "");
 				}
+				FREE(serviceName);
 			}
 			if(worker) {
 				char *client = zframe_strdup(sender);
@@ -703,28 +705,18 @@ void test_serialization()
 {
 	zframe_t *a = zframe_new("123", 3);
 	zframe_t *b = zframe_new("456", 3);
-	task_t *t;
 	task_t *task1 = NULL, *task2 = NULL;
 
 	task1 = task_create("serviceName", a, "method", "data", b);
 
 	if(task1) {
-		t = task1;
 		printf("task1:\n");
-		printf("  taskID = %s\n", task_get_taskID(t));
-		printf("  status = %u\n", task_get_status(t));
-		printf("  dispatched = %d\n", task_get_dispatched(t));
-		printf("  serviceName = %s\n", task_get_servicename(t));
-		printf("  method = %s\n", task_get_method(t));
-		printf("  data = %s\n", task_get_data(t));
-		printf("  client_str = %s\n", task_get_clientstr(t));
-		printf("  worker_str = %s\n", task_get_workerstr(t));
-		timeout_print(task_get_timeout(t));
+		task_print(task1);
 	}
 
 	serialize_t *buf = serialize_create();
 	if(buf) {
-		if(task_serialize(t, buf) == 0) {
+		if(task_serialize(task1, buf) == 0) {
 			char *item = serialize_bufdup(buf);
 			if(item) {
 				//printf("Buf[%d]: %s\n", (int)strlen(item) + 1, item);
@@ -738,17 +730,8 @@ void test_serialization()
 	}
 
 	if(task2) {
-		t = task2;
 		printf("task2:\n");
-		printf("  taskID = %s\n", task_get_taskID(t));
-		printf("  status = %u\n", task_get_status(t));
-		printf("  dispatched = %d\n", task_get_dispatched(t));
-		printf("  serviceName = %s\n", task_get_servicename(t));
-		printf("  method = %s\n", task_get_method(t));
-		printf("  data = %s\n", task_get_data(t));
-		printf("  client_str = %s\n", task_get_clientstr(t));
-		printf("  worker_str = %s\n", task_get_workerstr(t));
-		timeout_print(task_get_timeout(t));
+		task_print(task2);
 	}
 
 	if(task1) task_destroy(task1);
@@ -760,7 +743,7 @@ void test_serialization()
 
 int main(int argc, char **argv)
 {
-	test_serialization();
+//	test_serialization();
 
 	if(argc != 2) {
 		printf("Usage: %s tcp://*:<port>\n", argv[0]);
