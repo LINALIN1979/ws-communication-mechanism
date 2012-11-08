@@ -203,6 +203,7 @@ _client_req(client_t *self, int type, int arg_length, ...)
 			else			quit = 1;
 		}
 	}
+	timeout_destroy(&t);
 	free(arg);
 	return ret;
 }
@@ -259,7 +260,10 @@ client_destroy(client_t **self_p)
     if(self_p && *self_p) {
     	client_t *self = *self_p;
         zctx_destroy(&self->ctx);
-        if(self->send_lock) pthread_mutex_destroy(self->send_lock);
+        if(self->send_lock) {
+        	pthread_mutex_destroy(self->send_lock);
+        	free(self->send_lock);
+        }
         FREE(self->dispatcher);
         FREE(self->hostName);
         FREE(self);
@@ -281,7 +285,8 @@ client_destroy(client_t **self_p)
 //   data - task's data for method tor process
 // Return:
 //   Task ID in string format (UUID string format, 36 bytes length).
-//   NULL means error happens.
+//   NULL means error happens. Please remember to free when no
+//   more use.
 char *
 client_oplong(client_t *self, char *workers, char *method, char *data)
 {
@@ -308,7 +313,8 @@ client_oplong(client_t *self, char *workers, char *method, char *data)
 //   method - task's method name
 //   data - task's data for method tor process
 // Return:
-//   Result in string format. NULL means error happens
+//   Result in string format. NULL means error happens. Please
+//   remember to free when no more use.
 char *
 client_opshort(client_t *self, char *workers, char *method, char *data)
 {
