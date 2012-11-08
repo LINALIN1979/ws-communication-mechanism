@@ -179,9 +179,9 @@ sendcmd(pthread_mutex_t *lock, zlog_category_t* log, void *socket, char *from, i
 {
 	if(!socket) return;
 
-	zlog_debug(log, "sendcmd: zmsg_new() start");
+//	zlog_debug(log, "sendcmd: zmsg_new() start");
 	zmsg_t *msg = zmsg_new();
-	zlog_debug(log, "sendcmd: zmsg_new() done");
+//	zlog_debug(log, "sendcmd: zmsg_new() done");
 
 	// Data frames:
 	if(arg_length > 0) {
@@ -192,27 +192,27 @@ sendcmd(pthread_mutex_t *lock, zlog_category_t* log, void *socket, char *from, i
 		for(int index = 0; index < arg_length; index++) {
 			tmp = va_arg(arguments, char *);
 			if(tmp)	{
-				zlog_debug(log, "sendcmd: addstr \"%s\" start", tmp);
+//				zlog_debug(log, "sendcmd: addstr \"%s\" start", tmp);
 				zmsg_addstr(msg, tmp);
-				zlog_debug(log, "sendcmd: addstr \"%s\" done", tmp);
+//				zlog_debug(log, "sendcmd: addstr \"%s\" done", tmp);
 			}
 			//else	zmsg_addstr(msg, "");
 		}
 		va_end(arguments);
 	}
 	// Command frame:
-	zlog_debug(log, "sendcmd: pushstr start");
+//	zlog_debug(log, "sendcmd: pushstr start");
 	zmsg_pushstr(msg, cmd_code2payload(command));
-	zlog_debug(log, "sendcmd: pushstr done");
+//	zlog_debug(log, "sendcmd: pushstr done");
 	// From frame:
-	zlog_debug(log, "sendcmd: pushstr \"%s\" start", from);
+//	zlog_debug(log, "sendcmd: pushstr \"%s\" start", from);
 	zmsg_pushstr(msg, from);
-	zlog_debug(log, "sendcmd: pushstr \"%s\" done", from);
+//	zlog_debug(log, "sendcmd: pushstr \"%s\" done", from);
 	// Empty frame:
 	//   DEALER socket has to add empty frame manually before sending
-	zlog_debug(log, "sendcmd: pushstr empty start");
+//	zlog_debug(log, "sendcmd: pushstr empty start");
 	zmsg_pushstr(msg, "");
-	zlog_debug(log, "sendcmd: pushstr empty start");
+//	zlog_debug(log, "sendcmd: pushstr empty start");
 
 	zlog_debug(log, "Sending...");
 	dumpzmsg(log, msg);
@@ -225,10 +225,10 @@ sendcmd(pthread_mutex_t *lock, zlog_category_t* log, void *socket, char *from, i
 		}
 	}
 
-	zlog_debug(log, "sendcmd: zmsg_send() start");
+//	zlog_debug(log, "sendcmd: zmsg_send() start");
 	if(zmsg_send(&msg, socket))
 		zlog_error(log, "Failed to send in zmsg_send(), error code = %d", errno);
-	zlog_debug(log, "sendcmd: zmsg_send() done");
+//	zlog_debug(log, "sendcmd: zmsg_send() done");
 
 	// unlock mutex if any
 	if(lock) {
@@ -380,9 +380,9 @@ void
 timeout_print(timeout_t *self)
 {
 	if(self) {
-		printf("timeout_t->_old = %lu\n", self->_old);
-		printf("timeout_t->_new = %lu\n", self->_new);
-		printf("timeout_t->_interval = %lu\n", self->_interval);
+		printf("  timeout_t->_old = %lu\n", self->_old);
+		printf("  timeout_t->_new = %lu\n", self->_new);
+		printf("  timeout_t->_interval = %lu\n", self->_interval);
 	}
 }
 
