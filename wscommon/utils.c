@@ -102,11 +102,8 @@ gen_uuid_str()
 void
 dumpzmsg(zlog_category_t *log, zmsg_t *self)
 {
-	static char *buf = NULL;
-	static size_t buf_len = 512;
-
-	if(!buf)
-		buf = (char *)zmalloc(sizeof(char) * buf_len);
+	size_t buf_len = 512;
+	char *buf = (char *)zmalloc(sizeof(char) * buf_len);
 
 	zframe_t *frame = zmsg_first(self);
 	int frame_nbr = 0;
@@ -160,10 +157,11 @@ dumpzmsg(zlog_category_t *log, zmsg_t *self)
 		frame = zmsg_next(self);
 	}
 
-	if(!buf) return;
-
-	if(log)	zlog_debug(log, "%s", buf);
-	else	printf("%s\n", buf);
+	if(buf) {
+		if(log)	zlog_debug(log, "%s", buf);
+		else	printf("%s\n", buf);
+		free(buf);
+	}
 }
 
 // Send message through $socket
