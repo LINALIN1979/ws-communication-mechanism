@@ -61,12 +61,14 @@ int main(int argc, char **argv)
 				break;
 			}
 		}
+		free(taskid);
 	}
 
 	printf("opshort: ");
 	char *ret = client_opshort(session, "time", "method:time", "what time is it?");
 	if(ret)	printf("%s\n", ret);
 	else	printf("fail\n");
+	free(ret);
 
 	client_destroy(&session);
 	return 0;
