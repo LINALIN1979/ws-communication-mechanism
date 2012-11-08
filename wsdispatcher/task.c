@@ -186,10 +186,13 @@ void
 task_set_status(task_t *self, int status)
 {
 	if(self) {
-		// Can touch the task which already done (i.e. status == 100 || FAIL)
+		// Can't touch the task which already done (i.e. status == 100 || FAIL)
 		if(self->status == 100 || self->status == FAIL) return;
 
-		// TODO: should we have to do nothing when new status value is the same as previous?
+		// Q: Should we have to do nothing when new status value is the same as previous?
+		// A: Yes, we should do nothing because a very long operation needs to keep in touch
+		// to keep task alive. If worker doesn't touch task for a long time, Dispatcher will
+		// set to FAIL.
 		//if(status == self->status) return;
 
 		if((status > 100) && (status != FAIL) && (status != DISPATCHING))
