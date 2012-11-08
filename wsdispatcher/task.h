@@ -36,5 +36,6 @@ char*	task_get_data(task_t *self);
 int		task_get_expired(task_t *self);
 int		task_serialize(task_t *self, serialize_t *buf);
 task_t*	task_deserialize(serialize_t *buf);
+void	task_print(task_t * self);
 
 #endif /* TASK_H_ */

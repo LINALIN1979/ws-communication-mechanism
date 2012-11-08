@@ -311,3 +311,19 @@ task_get_expired(task_t *self)
 	}
 	return 1;
 }
+
+void
+task_print(task_t * self)
+{
+	if(self) {
+		printf("  taskID = %s\n", self->taskID);
+		printf("  status = %u\n", self->status);
+		printf("  dispatched = %d\n", self->dispatched);
+		printf("  serviceName = %s\n", self->serviceName);
+		printf("  method = %s\n", self->method);
+		printf("  data = %s\n", self->data);
+		printf("  client_str = %s\n", self->client_str);
+		printf("  worker_str = %s\n", self->worker_str);
+		timeout_print(task_get_timeout(self));
+	}
+}
