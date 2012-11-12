@@ -17,7 +17,7 @@ struct _worker_t {
 	zctx_t*		ctx;				// Our context
 	char*		dispatcher;			// Dispatcher address, ex: "tcp://172.17.153.190:5555"
 	void*		socket;				// Socket to dispatcher
-	uint64_t	recvWaitTimeout;	// Waiting timeout (millisecond) for message receiving
+//	uint64_t	recvWaitTimeout;	// Waiting timeout (millisecond) for message receiving
 
 	char*		serviceName;		// Worker service name
 	char*		hostName;			// Worker host name
@@ -36,7 +36,7 @@ struct _worker_t {
 
 	zlog_category_t*	log;
 
-	pthread_mutex_t*	sock_lock;
+	pthread_mutex_t		sock_lock;
 };
 
 // Connect/reconnect to dispatcher
@@ -54,7 +54,7 @@ _worker_connect_to_dispatcher(worker_t *self)
 		if(zmq_connect(self->socket, self->dispatcher) == 0) {
 			zlog_info(self->log, "Connect to dispatcher at %s...success", self->dispatcher);
 			zlog_info(self->log, "Send SERVICEREGREQ to dispatcher");
-			sendcmd(self->sock_lock, self->log, self->socket, WORKER, SERVICEREGREQ, 1, self->serviceName);
+			sendcmd(&self->sock_lock, self->log, self->socket, WORKER, SERVICEREGREQ, 1, self->serviceName);
 			self->workerState = WORKER_STATE_REGISTERING;
 			heartbeat_reactivate(self->heartbeat); // count from try to connect
 		}
@@ -73,10 +73,8 @@ _worker_state_machine(void *ptr)
 	if(!self) return NULL;
 
 	void *ipc = zsocket_new(self->ctx, ZMQ_PAIR);
-	if(zmq_connect(ipc, self->ipcAddress)) {
+	if(zmq_connect(ipc, self->ipcAddress))
 		zlog_error(self->log, "zmq_connect() failed to connect parent process, error code = %d", errno);
-//		return NULL;
-	}
 	else
 		zlog_info(self->log, "Worker thread connects to parent process at %s", self->ipcAddress);
 
@@ -86,40 +84,37 @@ _worker_state_machine(void *ptr)
 	zframe_t	*first_frame, *empty_frame, *from_frame;
 	int			rc, ret_code;
 	char 		*cmd, *code, *taskid, *method, *data, *token, *client, *ret_array;
+	zmq_pollitem_t	items[] = {
+			{self->socket,	0, ZMQ_POLLIN, 0},
+			{ipc,			0, ZMQ_POLLIN, 0},
+	};
 	int quit = 0;
 	while(!quit) {
-		zmq_pollitem_t	items[] = {
-				{self->socket,	0,	ZMQ_POLLIN,	0},
-				{ipc,			0,	ZMQ_POLLIN,	0},
-		};
-		rc = zmq_poll(items, 2, self->recvWaitTimeout);
+		if(pthread_mutex_lock(&self->sock_lock) != 0) {
+			zlog_error(self->log, "Unable to lock mutex for zmsg_poll()");
+			continue;
+		}
+		rc = zmq_poll(items, 2, 100 * ZMQ_POLL_MSEC);
+		if(pthread_mutex_unlock(&self->sock_lock) != 0) {
+			zlog_error(self->log,"Failed to unlock mutex for zmsg_poll(), terminated...");
+			quit = 1;
+		}
 		if(rc == -1) break; // Interrupted
 
 		// ====================
 		// Handle message from other thread
 		if(items[1].revents & ZMQ_POLLIN) {
-			zlog_debug(self->log, "Receiving from other thread...");
+			zlog_info(self->log, "Receiving from other thread...");
 			msg = zmsg_recv(ipc);
 			if(!msg) break; // Interrupted
 
-			dumpzmsg(self->log, msg);
-
 			first_frame = zmsg_pop(msg);
-			// The first frame is not empty, it is a command from other thread
-			if(!zframe_streq(first_frame, "")) {
-				// Thread terminate
-				if(zframe_streq(first_frame, THREADCOMM_TERMINATE)) {
-					quit = 1;
-				}
-				zmsg_destroy(&msg);
+			if(zframe_streq(first_frame, THREADCOMM_TERMINATE)) {
+				zlog_info(self->log, "  Receive terminate command");
+				quit = 1;
 			}
-//			// The first frame is empty, it is outgoing message to dispatcher,
-//			// just forward it
-//			else {
-//				zmsg_push(msg, zframe_dup(first_frame));
-//				zmsg_send(&msg, self->socket);
-//			}
 			zframe_destroy(&first_frame);
+			zmsg_destroy(&msg);
 		}
 		// ====================
 
@@ -127,18 +122,14 @@ _worker_state_machine(void *ptr)
 		// Handle message from dispatcher
 		if(items[0].revents & ZMQ_POLLIN) {
 			zlog_debug(self->log, "Receiving from dispatcher...");
-			if(self->sock_lock) {
-				if(pthread_mutex_lock(self->sock_lock) != 0) {
-					zlog_error(self->log, "Unable to lock mutex for zmsg_recv(), do not receive message");
-					continue;
-				}
+			if(pthread_mutex_lock(&self->sock_lock) != 0) {
+				zlog_error(self->log, "Unable to lock mutex for zmsg_recv(), do not receive message");
+				continue;
 			}
 			msg = zmsg_recv(self->socket);
-			if(self->sock_lock) {
-				if(pthread_mutex_unlock(self->sock_lock) != 0) {
-					zlog_error(self->log,"Failed to unlock mutex for zmsg_recv(), terminated...");
-					quit = 1;
-				}
+			if(pthread_mutex_unlock(&self->sock_lock) != 0) {
+				zlog_error(self->log,"Failed to unlock mutex for zmsg_recv(), terminated...");
+				quit = 1;
 			}
 			if(!msg) break; // Interrupted
 
@@ -223,16 +214,16 @@ _worker_state_machine(void *ptr)
 
 							zlog_info(self->log, "Receive OPLONG task from dispatcher");
 							if(taskid) {
-								zlog_info(self->log, "  ID: %s", taskid ? taskid : "empty string");
-								zlog_info(self->log, "  Method: %s", method ? method : "empty string");
-								zlog_info(self->log, "  Data: %s", data ? data : "empty string");
+								zlog_debug(self->log, "  ID: %s", taskid ? taskid : "empty string");
+								zlog_debug(self->log, "  Method: %s", method ? method : "empty string");
+								zlog_debug(self->log, "  Data: %s", data ? data : "empty string");
 								ret_code = S_FAIL;
 								if(self->oplong) {
 									if(self->oplong(taskid, method, data) == OPLONG_ACCEPT)
 										ret_code = S_OK;
 								}
 								zlog_info(self->log, "Reply [%s] to task ID [%s]", stat_code2str(ret_code), taskid);
-								sendcmd(self->sock_lock, self->log, self->socket, WORKER, TASKDISREP, 2, taskid, stat_code2payload(ret_code));
+								sendcmd(&self->sock_lock, self->log, self->socket, WORKER, TASKDISREP, 2, taskid, stat_code2payload(ret_code));
 							}
 							else zlog_info(self->log, "  WTF, no task ID");
 
@@ -252,29 +243,35 @@ _worker_state_machine(void *ptr)
 
 							zlog_info(self->log, "Receive OPSHORT task from dispatcher");
 							if(token) {
-								zlog_info(self->log, "  Token: %s", token ? token : "empty string");
-								zlog_info(self->log, "  Client: %s", client ? client : "empty string");
-								zlog_info(self->log, "  Method: %s", method ? method : "empty string");
-								zlog_info(self->log, "  Data: %s", data ? data : "empty string");
+								zlog_debug(self->log, "  Token: %s", token ? token : "empty string");
+								zlog_debug(self->log, "  Client: %s", client ? client : "empty string");
+								zlog_debug(self->log, "  Method: %s", method ? method : "empty string");
+								zlog_debug(self->log, "  Data: %s", data ? data : "empty string");
 								if(self->opshort) {
 									ret_array = self->opshort(method, data);
 									if(ret_array) {
 										ret_array = strdup(ret_array);
 										if(ret_array) {
 											zlog_info(self->log, "Reply [%s] to client [%s]'s task which token ID is [%s]", ret_array, client, token);
-											sendcmd(self->sock_lock, self->log, self->socket, WORKER, TASKDIRECTREP, 3, token, client, ret_array);
+											sendcmd(&self->sock_lock, self->log, self->socket, WORKER, TASKDIRECTREP, 3, token, client, ret_array);
 											free(ret_array);
+										}
+										else {
+											// Supposedly not to reach here, but we still do error handling
+											zlog_info(self->log, "Failed to copy string from opshort, reply empty data to client [%s]", client);
+											sendcmd(&self->sock_lock, self->log, self->socket, WORKER, TASKDIRECTREP, 3, token, client, "");
 										}
 									}
 									else {
 										// Returned string from self->opshort is null, reply empty string
 										zlog_info(self->log, "Reply empty data to client [%s]", client);
-										sendcmd(self->sock_lock, self->log, self->socket, WORKER, TASKDIRECTREP, 3, token, client, "");
+										sendcmd(&self->sock_lock, self->log, self->socket, WORKER, TASKDIRECTREP, 3, token, client, "");
 									}
 								}
 								else {
+									// No opshort registered, reply empty string
 									zlog_info(self->log, "No OPSHORT callback registered, reply empty data");
-									sendcmd(self->sock_lock, self->log, self->socket, WORKER, TASKDIRECTREP, 3, token, client, "");
+									sendcmd(&self->sock_lock, self->log, self->socket, WORKER, TASKDIRECTREP, 3, token, client, "");
 								}
 							}
 							else zlog_info(self->log, "  WTF, no token");
@@ -314,14 +311,14 @@ _worker_state_machine(void *ptr)
 		if(self->workerState == WORKER_STATE_REGISTERED) {
 			if(heartbeat_check(self->heartbeat) == 0) {
 				zlog_info(self->log, "Can't feel dispatcher's heartbeat!");
-				sendcmd(self->sock_lock, self->log, self->socket, WORKER, DISCONNECT, 0);
+				sendcmd(&self->sock_lock, self->log, self->socket, WORKER, DISCONNECT, 0);
 				self->workerState = WORKER_STATE_UNREGISTER;
 				heartbeat_reactivate(self->heartbeat); // enable again for WORKER_STATE_REGISTERING loop
 			}
 		}
 		else if(self->workerState == WORKER_STATE_REGISTERING) {
 			if(heartbeat_check(self->heartbeat) == 0) {
-				zlog_info(self->log, "Retry to connect dispatcher is timeout'd");
+				zlog_info(self->log, "Previous trial to connect dispatcher was timeout'd");
 				self->workerState = WORKER_STATE_UNREGISTER;
 			}
 		}
@@ -337,8 +334,8 @@ _worker_state_machine(void *ptr)
 		zlog_info(self->log, "Interrupt received, killing worker...");
 	}
 	self->workerState = WORKER_STATE_UNREGISTER;
-	sendcmd(self->sock_lock, self->log, self->socket, WORKER, DISCONNECT, 0);
-//	zmq_close(ipc); // <--- DON'T DO SO, it occurs segmetation fault. zctx_destroy in worker_destroy will cover
+	sendcmd(&self->sock_lock, self->log, self->socket, WORKER, DISCONNECT, 0);
+//	zmq_close(ipc); // <--- DON'T DO SO, it occurs segmentation fault. zctx_destroy in worker_destroy will cover
 	pthread_exit(NULL); // int ret; pthread_exit(&ret);
 	return NULL;
 }
@@ -351,7 +348,7 @@ _heartbeat_sendfn(void *ptr)
 		// Only send HEARTBEAT when connected
 		if(self->workerState == WORKER_STATE_REGISTERED) {
 			//zlog_info(self->log, "Sending HEARTBEAT");
-			sendcmd(self->sock_lock, self->log, self->socket, WORKER, HEARTBEAT, 0);
+			sendcmd(&self->sock_lock, self->log, self->socket, WORKER, HEARTBEAT, 0);
 		}
 
 		// The other case could be WORKER_STATE_REGISTERING.
@@ -389,16 +386,10 @@ worker_create(char *name, char *dispatcher, worker_oplong_fn *oplong, worker_ops
 	self->ctx = zctx_new();
 	self->dispatcher = strdup(dispatcher);
 	self->workerState = WORKER_STATE_UNREGISTER;
-	self->recvWaitTimeout = RECV_WAIT_TIMEOUT * ZMQ_POLL_MSEC;
-	self->sock_lock = (pthread_mutex_t *)zmalloc(sizeof(pthread_mutex_t));
-	if(self->sock_lock) {
-		if(pthread_mutex_init(self->sock_lock, NULL) != 0) {
-			zlog_debug(self->log, "Failed to init send_lock");
-			free(self->sock_lock);
-		}
+//	self->recvWaitTimeout = RECV_WAIT_TIMEOUT * ZMQ_POLL_MSEC;
+	if(pthread_mutex_init(&self->sock_lock, NULL) != 0) {
+		zlog_debug(self->log, "Failed to init send_lock");
 	}
-	else
-		zlog_debug(self->log, "Failed to allocate memory for send_lock");
 	self->heartbeat = heartbeat_create(15000, 3000, &_heartbeat_sendfn, self); // the keepalive must larger than recvWaitTimeout * 2, because zmq_poll base on recvWaitTimeout to wait for 2 sockets
 	if(oplong)	self->oplong = oplong;
 	if(opshort)	self->opshort = opshort;
@@ -469,10 +460,7 @@ worker_destroy(worker_t **self_p)
 //		}
 		heartbeat_destroy(&self->heartbeat);
 		zctx_destroy (&self->ctx);
-		if(self->sock_lock) {
-			pthread_mutex_destroy(self->sock_lock);
-			free(self->sock_lock);
-		}
+		pthread_mutex_destroy(&self->sock_lock);
 		FREE(self->dispatcher);
 		FREE(self->serviceName);
 		FREE(self->hostName);
@@ -508,8 +496,7 @@ worker_update(worker_t *self, char *taskid, unsigned int percentage)
 		char *buf = uitoa(percentage);
 		if(buf) {
 			zlog_info(self->log, "Update percentage %3u%s to task [%s]", percentage, (percentage != TASK_FAIL) ? "%%" : "", taskid);
-			//sendcmd(self->send_lock, self->log, self->ipcBindSocket, WORKER, TASKUPDATE, 2, taskid, buf);
-			sendcmd(self->sock_lock, self->log, self->socket, WORKER, TASKUPDATE, 2, taskid, buf);
+			sendcmd(&self->sock_lock, self->log, self->socket, WORKER, TASKUPDATE, 2, taskid, buf);
 			free(buf);
 			return 0;
 		}
