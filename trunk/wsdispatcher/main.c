@@ -325,6 +325,7 @@ process_msg_from_client (dispatcher_t *self, zframe_t *sender, zmsg_t *msg)
     		if(!strcmp(taskid, NULL_UUID)) {
     			zlog_info(self->log, "Receive TASKQUERYREQ with NULL UUID, return FAIL to client");
     			status = stat_code2payload(FAIL);
+    			_sendcmd(self, sender, 3, cmd_code2payload(TASKQUERYREP), taskid, status);
     		}
     		else {
     			task_t *task = zhash_lookup(self->tasks, taskid);
@@ -332,16 +333,17 @@ process_msg_from_client (dispatcher_t *self, zframe_t *sender, zmsg_t *msg)
     			if(task) {
     				zlog_info(self->log, "Receive TASKQUERYREQ with task ID [%s] and found, return %3d%% to client", taskid, task_get_status(task));
     				status = uitoa(task_get_status(task));
+    				_sendcmd(self, sender, 3, cmd_code2payload(TASKQUERYREP), taskid, status);
+    				free(status);
     			}
     			// Task not found, reply S_NOTFOUND
     			else {
     				zlog_info(self->log, "Receive TASKQUERYREQ with task ID [%s] but not found, return FAIL to client", taskid);
     				status = stat_code2payload(S_NOTFOUND);
+    				_sendcmd(self, sender, 3, cmd_code2payload(TASKQUERYREP), taskid, status);
     			}
 				// TODO: after query, if task status percentage is 100, remove it from self->tasks?
     		}
-			_sendcmd(self, sender, 3, cmd_code2payload(TASKQUERYREP), taskid, status);
-			FREE(status);
 
 			FREE(taskid);
     	}
@@ -594,12 +596,42 @@ process_msg_from_worker (dispatcher_t *self, zframe_t *sender, zmsg_t *msg)
     zmsg_destroy (&msg);
 }
 
-#define TASK_TIMEOUT_IN_MS	10000
+unsigned int _dispatching_count = 0;
+pthread_mutex_t _dispatching_count_lock;
+
+void
+_dispatching_count_set(unsigned int count)
+{
+	if(pthread_mutex_lock(&_dispatching_count_lock) == 0) {
+		_dispatching_count = count;
+		pthread_mutex_unlock(&_dispatching_count_lock);
+	}
+}
+
+unsigned int
+_dispatching_count_get()
+{
+	unsigned int ret = -1;
+	if(pthread_mutex_lock(&_dispatching_count_lock) == 0) {
+		ret = _dispatching_count;
+		pthread_mutex_unlock(&_dispatching_count_lock);
+	}
+	return ret;
+}
+
+void
+_dispatching_count_decraese()
+{
+	if(pthread_mutex_lock(&_dispatching_count_lock) == 0) {
+		_dispatching_count--;
+		pthread_mutex_unlock(&_dispatching_count_lock);
+	}
+}
 
 static void
-service_dispatch(void *ptr)
+_service_dispatch(void *ptr)
 {
-	if(!ptr) return;
+	if(!ptr) goto _service_dispatch_return;
 
 	service_t *self = (service_t *)ptr;
 
@@ -618,7 +650,7 @@ service_dispatch(void *ptr)
     if(count > 0)
     	zlog_debug(self->dispatcher->log, "[%s] service dispatching:", self->name);
     else
-    	return;
+    	goto _service_dispatch_return;
 
     while(count-- > 0) {
         task_t *task = (task_t *)zlist_pop(self->tasks);
@@ -670,26 +702,39 @@ service_dispatch(void *ptr)
 		}
         zlist_append(self->tasks, task); // push task back to the end of task list
     }
+
+_service_dispatch_return:
+	_dispatching_count_decraese();
+	return;
 }
 
-int service_dispatch_all(const char *key, void *item, void *argument)
+int
+_service_dispatch_all(const char *key, void *item, void *argument)
 {
 	service_t *service = item;
 	if(service) {
 #if TASKPROC_IN_MULTITHREAD
-			if(service->dispatcher->threads) {
-				if(threadpool_add(service->dispatcher->threads, &service_dispatch, service, 0) == 0)
-					zlog_debug(service->dispatcher->log, "Dispatch [%s] service by threadpool", service->name);
-				else {
-					zlog_debug(service->dispatcher->log, "Dispatch [%s] service by current thread due to no thread available from threadpool", service->name);
-					service_dispatch(service);
-				}
+		if(service->dispatcher->threads) {
+			if(threadpool_add(service->dispatcher->threads, &_service_dispatch, service, 0) == 0)
+				zlog_debug(service->dispatcher->log, "Dispatch [%s] service by threadpool", service->name);
+			else {
+				zlog_debug(service->dispatcher->log, "Dispatch [%s] service by current thread due to no thread available from threadpool", service->name);
+				_service_dispatch(service);
 			}
-			else
+		}
+		else
 #endif
-				service_dispatch(service);
+			_service_dispatch(service);
 	}
 	return 0;
+}
+
+void service_dispatch_all(dispatcher_t *self)
+{
+	if(_dispatching_count_get() == 0) {
+		_dispatching_count_set(zhash_size(self->services));
+		zhash_foreach(self->services, &_service_dispatch_all, NULL); // heartbeat is also manipulated in service_distpach
+	}
 }
 
 int disconnect_all_workers(const char *key, void *item, void *argument)
@@ -750,19 +795,34 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	// TODO: fail recovery, to read previous state here or in dispatcher_new()
+	// TODO: failure recovery, to read previous state here or in dispatcher_new()
 
 	dispatcher_t *self = dispatcher_new();
 	if(!self) return 1;
 	zsocket_bind(self->socket, argv[1]);
 	zlog_info(self->log, "Bind to %s", argv[1]);
 
+	zmq_pollitem_t items [] = {	{ self->socket,  0, ZMQ_POLLIN, 0 } };
 	int quit = 0;
 	// Get and process messages forever or until interrupted
 	while(!quit) {
-		zmq_pollitem_t items [] = {
-			{ self->socket,  0, ZMQ_POLLIN, 0 } };
-		int rc = zmq_poll (items, 1, HEARTBEAT_INTERVAL * ZMQ_POLL_MSEC);
+#if TASKPROC_IN_MULTITHREAD
+		if(self->threads) {
+			if(pthread_mutex_lock(&(self->sock_lock)) != 0) {
+				zlog_error(self->log, "Unable to lock mutex for zmsg_poll()");
+				continue;
+			}
+		}
+#endif
+		int rc = zmq_poll (items, 1, 100 * ZMQ_POLL_MSEC);
+#if TASKPROC_IN_MULTITHREAD
+		if(self->threads) {
+			if(pthread_mutex_unlock(&(self->sock_lock)) != 0) {
+				zlog_error(self->log,"Failed to unlock mutex for zmsg_poll(), terminated...");
+				quit = 1;
+			}
+		}
+#endif
 		if (rc == -1) break; //  Interrupted -> zctx_interrupted
 
 		//  Process next input message, if any
@@ -811,13 +871,7 @@ int main(int argc, char **argv)
 			zframe_destroy (&role);
 		}
 
-		zhash_foreach(self->services, &service_dispatch_all, NULL); // heartbeat is also manipulated in service_distpach
-#if TASKPROC_IN_MULTITHREAD
-		if(self->threads) {
-			while(threadpool_task_size(self->threads) > 0)
-				zclock_sleep(100);
-		}
-#endif
+		service_dispatch_all(self);
 	}
 	if (zctx_interrupted) {
 		zlog_info(self->log, "Interrupt received, shutting down...");
