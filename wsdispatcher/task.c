@@ -240,6 +240,8 @@ void
 task_set_client(task_t *self, zframe_t *client)
 {
 	if(self && client) {
+		if(self->client) zframe_destroy(&self->client);
+		FREE(self->client_str);
 		self->client = zframe_dup(client);
 		self->client_str = zframe_strdup(self->client);
 		timeout_update(self->timeout);
@@ -271,6 +273,8 @@ void
 task_set_worker(task_t *self, zframe_t *worker)
 {
 	if(self && worker) {
+		if(self->worker) zframe_destroy(&self->worker);
+		FREE(self->worker_str);
 		self->worker = zframe_dup(worker);
 		self->worker_str = zframe_strdup(self->worker);
 		timeout_update(self->timeout);
