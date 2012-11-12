@@ -140,7 +140,7 @@ int main (int argc, char *argv [])
 		return 0;
 	}
 
-	threads = threadpool_create(3, 5, 0);
+	threads = threadpool_create(4, 24, 0);
 
 	worker = worker_create(argv[2], argv[1], &oplong, &opshort);
 	if(!worker) {
