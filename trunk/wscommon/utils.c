@@ -237,7 +237,7 @@ sendcmd(pthread_mutex_t *lock, zlog_category_t* log, void *socket, char *from, i
 	}
 }
 
-// Convert unsigned integer to char array, please remember to free
+// Convert unsigned integer (4bytes) to char array, please remember to free
 char *
 uitoa(unsigned int value)
 {
@@ -254,6 +254,68 @@ uitoa(unsigned int value)
 		else					break;			// snprintf success
 	}
 	return buf;
+}
+
+// Convert uint64_t (8bytes) to char array, please remember to free
+char *
+ultoa(uint64_t value)
+{
+	size_t buf_len = 24;
+	char *buf = (char *)zmalloc(sizeof(char) * buf_len);
+
+	while(buf) {
+		int required = snprintf(buf, buf_len, "%lu", value);
+		if(required >= buf_len) {				// buf is not enough for percentage output, enlarge it
+			buf_len = required;
+			buf = realloc(buf, buf_len);
+		}
+		else if(required < 0)	return NULL;	// snprintf error happens
+		else					break;			// snprintf success
+	}
+	return buf;
+}
+
+uint64_t
+atoul(char *src, size_t src_length, int base)
+{
+	uint64_t ret = 0;
+//	printf("atoul: %s, length = %d\n", src, (int)src_length);
+	if(src) {
+		uint64_t multi = 1;
+		char *tmp;
+		for(int i = src_length - 1; i >= 0; i--) {
+//			printf("[%d:%c]: %lu -> ", i, src[i], ret);
+			tmp = src + i;
+
+			switch(base) {
+			case 8:
+				// Number
+				if     ((*tmp >= '0') && (*tmp <= '8'))	ret += (uint64_t)((*tmp - '0') * multi);
+				// Unknow -> do nothing
+				multi <<= 3;
+				break;
+			case 16:
+				// Number
+				if     ((*tmp >= '0') && (*tmp <= '9'))	ret += (uint64_t)((*tmp - '0') * multi);
+				// a~f
+				else if((*tmp >= 'a') && (*tmp <= 'f'))	ret += (uint64_t)((*tmp - 'a' + 10) * multi);
+				// A~F
+				else if((*tmp >= 'A') && (*tmp <= 'F'))	ret += (uint64_t)((*tmp - 'A' + 10) * multi);
+				// Unknow -> do nothing
+				multi <<= 4;
+				break;
+			case 10:
+			default:
+				// Number
+				if     ((*tmp >= '0') && (*tmp <= '9'))	ret += (uint64_t)((*tmp - '0') * multi);
+				// Unknow -> do nothing
+				multi *= 10;
+				break;
+			}
+//			printf("%lu\n", ret);
+		}
+	}
+	return ret;
 }
 
 // Check zmsg_t size is larger than or equal to $size or not. Return 1 means
@@ -337,6 +399,18 @@ timeout_create(uint64_t interval_ms)
 	return ret;
 }
 
+timeout_t *
+timeout_create_manually(uint64_t _old, uint64_t _new, uint64_t _interval)
+{
+	timeout_t *ret = (timeout_t *)zmalloc(sizeof(timeout_t));
+	if(ret) {
+		ret->_old = _old;
+		ret->_new = _new;
+		ret->_interval = _interval;
+	}
+	return ret;
+}
+
 // Return remaining time in millisecounds.
 //
 // Return:
@@ -382,6 +456,27 @@ timeout_print(timeout_t *self)
 		printf("  timeout_t->_new = %lu\n", self->_new);
 		printf("  timeout_t->_interval = %lu\n", self->_interval);
 	}
+}
+
+uint64_t
+timeout_get_old(timeout_t *self)
+{
+	if(self)return self->_old;
+	else	return 0;
+}
+
+uint64_t
+timeout_get_new(timeout_t *self)
+{
+	if(self)return self->_new;
+	else	return 0;
+}
+
+uint64_t
+timeout_get_interval(timeout_t *self)
+{
+	if(self)return self->_interval;
+	else	return 0;
 }
 
 struct _heartbeat_t {
@@ -473,6 +568,25 @@ heartbeat_create(uint64_t deadtime, uint64_t keepalive, heartbeat_send_fn *send_
 	return self;
 }
 
+heartbeat_t *
+heartbeat_create_manually(uint64_t deadtime, uint64_t keepalive,
+		uint64_t timeout_old, uint64_t timeout_new, uint64_t timeout_interval, int retries,
+		heartbeat_send_fn *send_fn, void *send_param)
+{
+	heartbeat_t *self = (heartbeat_t *)zmalloc(sizeof(heartbeat_t));
+	if(self) {
+		self->_deadtime = deadtime;
+		self->_keepalive = keepalive;
+
+		self->timeout = timeout_create_manually(timeout_old, timeout_new, timeout_interval);
+		self->retries = retries;
+
+		self->send_fn = send_fn;
+		self->send_param = send_param;
+	}
+	return self;
+}
+
 // Do heartbeat check, 1 means still alive, 0 means dead. During
 // the check, if it is time to send heartbeat, callback function
 // will be called.
@@ -536,3 +650,32 @@ heartbeat_destroy(heartbeat_t **self_p)
 		*self_p = NULL;
 	}
 }
+
+timeout_t *
+heartbeat_get_timeout(heartbeat_t *self)
+{
+	if(self)return self->timeout;
+	else	return NULL;
+}
+
+uint64_t
+heartbeat_get_deadtime(heartbeat_t *self)
+{
+	if(self)return self->_deadtime;
+	else	return 0;
+}
+
+uint64_t
+heartbeat_get_keepalive(heartbeat_t *self)
+{
+	if(self)return self->_keepalive;
+	else	return 0;
+}
+
+int
+heartbeat_get_retries(heartbeat_t *self)
+{
+	if(self)return self->retries;
+	else	return 0;
+}
+
