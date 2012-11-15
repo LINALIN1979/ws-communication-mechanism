@@ -23,6 +23,8 @@ char*			gen_uuid_str();
 void			dumpzmsg(zlog_category_t* log, zmsg_t *self);
 void			sendcmd(pthread_mutex_t *lock, zlog_category_t* log, void *socket, char *from, int command, int arg_length, ...);
 char*			uitoa(unsigned int integer);
+char*			ultoa(uint64_t value);
+uint64_t		atoul(char *src, size_t src_length, int base);
 int				is_zmsg_size_enough(zlog_category_t* log, zmsg_t *msg, int size);
 
 // ---------------------------------------------------------------------
@@ -48,23 +50,34 @@ char*			serialize_r_str(serialize_t *self);
 // ---------------------------------------------------------------------
 typedef struct _timeout_t timeout_t;
 timeout_t*		timeout_create(uint64_t interval_ms);
+timeout_t*		timeout_create_manually(uint64_t _old, uint64_t _new, uint64_t _interval);
 uint64_t		timeout_remain(timeout_t *self);
 void			timeout_update(timeout_t *self);
 int				timeout_serialize(timeout_t *self, serialize_t *buf);
 timeout_t*		timeout_deserialize(serialize_t *buf);
 void			timeout_destroy(timeout_t **self_p);
 void			timeout_print(timeout_t *self);
+uint64_t		timeout_get_old(timeout_t *self);
+uint64_t		timeout_get_new(timeout_t *self);
+uint64_t		timeout_get_interval(timeout_t *self);
 
 // ---------------------------------------------------------------------
 typedef struct _heartbeat_t heartbeat_t;
 typedef void	(heartbeat_send_fn)(void *ptr);
 heartbeat_t*	heartbeat_create(uint64_t deadtime, uint64_t keepalive, heartbeat_send_fn *send_fn, void *send_param);
+heartbeat_t*	heartbeat_create_manually(uint64_t deadtime, uint64_t keepalive,
+											uint64_t timeout_old, uint64_t timeout_new, uint64_t timeout_interval, int retries,
+											heartbeat_send_fn *send_fn, void *send_param);
 int				heartbeat_check(heartbeat_t *self);
 void			heartbeat_reset_retries(heartbeat_t *self);
 void			heartbeat_reactivate(heartbeat_t *self);
 int				heartbeat_serialize(heartbeat_t *self, serialize_t *buf);
 heartbeat_t*	heartbeat_deserialize(serialize_t *buf);
 void			heartbeat_destroy(heartbeat_t **self_p);
+timeout_t*		heartbeat_get_timeout(heartbeat_t *self);
+uint64_t		heartbeat_get_deadtime(heartbeat_t *self);
+uint64_t		heartbeat_get_keepalive(heartbeat_t *self);
+int				heartbeat_get_retries(heartbeat_t *self);
 
 // ---------------------------------------------------------------------
 typedef struct _threadpool_t threadpool_t;
