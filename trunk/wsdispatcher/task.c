@@ -153,6 +153,35 @@ task_create(char *service_name, zframe_t *client, char *method, char *data, zfra
 	return task;
 }
 
+task_t *
+task_create_manually(char *taskID, unsigned int status, int dispatched,
+		uint64_t createTime, uint64_t timeout_old, uint64_t timeout_new, uint64_t timeout_interval,
+		char *serviceName, char *method, char *data,
+		char *client_str, char *worker_str)
+{
+	task_t *task = (task_t *)zmalloc(sizeof(task_t));
+	if(task) {
+		task->taskID = strdup(taskID);
+		task->status = status;
+
+		task->dispatched = dispatched;
+
+		task->createTime = createTime;
+		task->timeout = timeout_create_manually(timeout_old, timeout_new, timeout_interval);
+
+		task->serviceName = strdup(serviceName);
+		task->method = strdup(method);
+		task->data = strdup(data);
+
+		task->client_str = strdup(client_str);
+		task->client = zframe_new(task->client_str, strlen(task->client_str));
+
+		task->worker_str = strdup(worker_str);
+		task->worker = zframe_new(task->worker_str, strlen(task->worker_str));
+	}
+	return task;
+}
+
 void
 task_destroy(void *argument)
 {
@@ -230,7 +259,7 @@ task_get_client(task_t *self)
 }
 
 char*
-task_get_clientstr(task_t *self)
+task_get_client_str(task_t *self)
 {
 	if(self)return self->client_str;
 	else	return NULL;
@@ -248,6 +277,25 @@ task_set_client(task_t *self, zframe_t *client)
 	}
 }
 
+void
+task_set_client_str(task_t *self, char *client_str)
+{
+	if(self && client_str) {
+		if(self->client) zframe_destroy(&self->client);
+		FREE(self->client_str);
+		self->client_str = strdup(client_str);
+		self->client = zframe_new(self->client_str, strlen(self->client_str));
+		timeout_update(self->timeout);
+	}
+}
+
+uint64_t
+task_get_createTime(task_t *self)
+{
+	if(self)return self->createTime;
+	else	return 0;
+}
+
 timeout_t*
 task_get_timeout(task_t *self)
 {
@@ -263,7 +311,7 @@ task_get_worker(task_t *self)
 }
 
 char*
-task_get_workerstr(task_t *self)
+task_get_worker_str(task_t *self)
 {
 	if(self)return self->worker_str;
 	else	return NULL;
@@ -281,6 +329,18 @@ task_set_worker(task_t *self, zframe_t *worker)
 	}
 }
 
+void
+task_set_worker_str(task_t *self, char *worker_str)
+{
+	if(self && worker_str) {
+		if(self->worker) zframe_destroy(&self->worker);
+		FREE(self->worker_str);
+		self->worker_str = strdup(worker_str);
+		self->worker = zframe_new(self->worker_str, strlen(self->worker_str));
+		timeout_update(self->timeout);
+	}
+}
+
 char*
 task_get_taskID(task_t *self)
 {
@@ -289,7 +349,7 @@ task_get_taskID(task_t *self)
 }
 
 char*
-task_get_servicename(task_t *self)
+task_get_serviceName(task_t *self)
 {
 	if(self)return self->serviceName;
 	else	return NULL;
