@@ -34,6 +34,7 @@
 							<tool id="cdt.managedbuild.tool.gnu.c.linker.exe.debug.1529517825" name="GCC C Linker" superClass="cdt.managedbuild.tool.gnu.c.linker.exe.debug">
 								<option id="gnu.c.link.option.libs.1919998141" name="Libraries (-l)" superClass="gnu.c.link.option.libs" valueType="libs">
 									<listOptionValue builtIn="false" value="wscommon"/>
+									<listOptionValue builtIn="false" value="pq"/>
 									<listOptionValue builtIn="false" value="zlog"/>
 									<listOptionValue builtIn="false" value="uuid"/>
 									<listOptionValue builtIn="false" value="zmq"/>
@@ -90,6 +91,7 @@
 							<tool id="cdt.managedbuild.tool.gnu.c.linker.exe.release.1622519905" name="GCC C Linker" superClass="cdt.managedbuild.tool.gnu.c.linker.exe.release">
 								<option id="gnu.c.link.option.libs.1938277155" name="Libraries (-l)" superClass="gnu.c.link.option.libs" valueType="libs">
 									<listOptionValue builtIn="false" value="wscommon"/>
+									<listOptionValue builtIn="false" value="pq"/>
 									<listOptionValue builtIn="false" value="zlog"/>
 									<listOptionValue builtIn="false" value="uuid"/>
 									<listOptionValue builtIn="false" value="zmq"/>
