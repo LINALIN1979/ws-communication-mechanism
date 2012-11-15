@@ -84,12 +84,12 @@ _worker_state_machine(void *ptr)
 	zframe_t	*first_frame, *empty_frame, *from_frame;
 	int			rc, ret_code;
 	char 		*cmd, *code, *taskid, *method, *data, *token, *client, *ret_array;
-	zmq_pollitem_t	items[] = {
-			{self->socket,	0, ZMQ_POLLIN, 0},
-			{ipc,			0, ZMQ_POLLIN, 0},
-	};
 	int quit = 0;
 	while(!quit) {
+		zmq_pollitem_t	items[] = {
+				{self->socket,	0, ZMQ_POLLIN, 0},
+				{ipc,			0, ZMQ_POLLIN, 0},
+		};
 		if(pthread_mutex_lock(&self->sock_lock) != 0) {
 			zlog_error(self->log, "Unable to lock mutex for zmsg_poll()");
 			continue;
