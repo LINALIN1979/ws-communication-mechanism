@@ -6,12 +6,16 @@
 					// definition to make compiler see strdup from string.h. Or to
 					// remove "-ansi" from compiler option
 
+#define TASKPROC_IN_MULTITHREAD	// Toggle of multi-thread supprt
+#define SAVE_STATE_TO_DATABASE	// Toggle of save state to database
+
 #include "../wscommon/protocol.h"
 #include "../wscommon/utils.h"
 #include "task.h"
-#include <postgresql/libpq-fe.h>
+#ifdef SAVE_STATE_TO_DATABASE
+	#include <postgresql/libpq-fe.h>
+#endif
 
-#define TASKPROC_IN_MULTITHREAD 1
 
 #define HEARTBEAT_LIVEING	15000	// If doesn't receive peer heartbeat exceeds this period, will treat as dead
 #define HEARTBEAT_INTERVAL  3000	// Heartbeat sending interval (in millisecond)
@@ -22,7 +26,12 @@ typedef struct {
 	char			*bind;			// Dispatcher bind address
 	void			*socket;		// Socket for clients & workers to connect
 
+#ifdef SAVE_STATE_TO_DATABASE
 	PGconn			*dbconn;
+ #if defined TASKPROC_IN_MULTITHREAD
+	pthread_mutex_t db_write_lock;
+ #endif
+#endif
 
 	zhash_t			*workers;		// Hash table to store connected workers
 	zhash_t			*services;		// Hash of known services
@@ -30,7 +39,7 @@ typedef struct {
 
 	zlog_category_t	*log;
 
-#if TASKPROC_IN_MULTITHREAD
+#ifdef TASKPROC_IN_MULTITHREAD
 	threadpool_t	*threads;
 	pthread_mutex_t	sock_lock;
 #endif
@@ -92,7 +101,7 @@ void _sendcmd(dispatcher_t* self, zframe_t *reply_to, int arg_length, ...)
 	zlog_debug(self->log, "Sending...");
 	dumpzmsg(self->log, msg);
 
-#if TASKPROC_IN_MULTITHREAD
+#ifdef TASKPROC_IN_MULTITHREAD
 	if(self->threads) {
 		if(pthread_mutex_lock(&(self->sock_lock)) != 0) {
 			zlog_error(self->log, "Unable to lock send_mutex in _sendcmd(), do not send message");
@@ -102,7 +111,7 @@ void _sendcmd(dispatcher_t* self, zframe_t *reply_to, int arg_length, ...)
 #endif
 	if(zmsg_send(&msg, self->socket))
 		zlog_error(self->log, "Failed to send in zmsg_send(), error code = %d", errno);
-#if TASKPROC_IN_MULTITHREAD
+#ifdef TASKPROC_IN_MULTITHREAD
 	if(self->threads) {
 		if(pthread_mutex_unlock(&(self->sock_lock)) != 0) {
 			zlog_error(self->log,"Failed to unlock send_mutex in _sendcmd(), subsequent messages may be blocked");
@@ -138,10 +147,15 @@ dispatcher_new()
 	self->workers = zhash_new();
 	self->tasks = zhash_new();
 
+#ifdef SAVE_STATE_TO_DATABASE
+ #if defined TASKPROC_IN_MULTITHREAD
+	pthread_mutex_init(&(self->db_write_lock), NULL);
+ #endif
     // FIXME: [DB] ========================================
     self->dbconn = PQconnectdb("dbname=testdb user=test password=test");
     if(PQstatus(self->dbconn) == CONNECTION_OK) {
-    	// Read previous state from database
+    	zlog_debug(self->log, "Rebuild services/workers/tasks from database");
+
     	PGresult *services, *workers, *tasks;
 
     	// rebuild self->services
@@ -152,25 +166,24 @@ dispatcher_new()
     		int name_fnum = PQfnumber(services, "name");
     		for(int i = 0; i < PQntuples(services); i++) {
     			// create service_t to store and put into self->services
-    			const char *name[1];
-    			char *_name = PQgetvalue(services, i, name_fnum);
-    			name[0] = _name;
+    			char *name = PQgetvalue(services, i, name_fnum);
+    			const char *params[1] = { name };
     			service_t *service = (service_t *)zmalloc(sizeof(service_t));
 				service->dispatcher = self;
-				service->name = strdup(_name);
+				service->name = strdup(name);
 				service->workers = zlist_new();
 				service->tasks = zlist_new();
-				zhash_insert(self->services, _name, service);
-				zhash_freefn(self->services, _name, service_destroy);
-				zlog_info(self->log, "Create service [%s]", _name);
+				zhash_insert(self->services, name, service);
+				zhash_freefn(self->services, name, service_destroy);
+				zlog_debug(self->log, "  Create service [%s]", name);
 
     			// search workers belong to this service
-    			sql_cmd = "SELECT * FROM dispatcher.workers WHERE service_name = $1";
+    			sql_cmd = "SELECT * FROM dispatcher.workers WHERE service_name=$1";
 				workers = PQexecParams(self->dbconn,
 						sql_cmd,
 						1, 		// one param
 						NULL,	// let the backend deduce param type
-						name,
+						params,
 						NULL,	// don't need param lengths since text
 						NULL,	// default to all text params
 						1);
@@ -215,28 +228,28 @@ dispatcher_new()
 						zhash_insert(self->workers, worker->hostName, worker);
 						zhash_freefn(self->workers, worker->hostName, worker_destroy);
 						zlist_append(worker->service->workers, worker);
-						zlog_info(self->log, "Add worker [%s] to service [%s]", worker->hostName, service->name);
+						zlog_debug(self->log, "  Add worker [%s] to service [%s]", worker->hostName, service->name);
 					}
 				}
 				else {
-					zlog_error(self->log, "Failed in SQL command: %s", sql_cmd);
-					zlog_error(self->log, "%s", PQerrorMessage(self->dbconn));
+					zlog_error(self->log, "  Failed in SQL command: %s", sql_cmd);
+					zlog_error(self->log, "  %s", PQerrorMessage(self->dbconn));
 				}
 				PQclear(workers);
 
 				// search tasks belong to this service
-				sql_cmd = "SELECT * FROM dispatcher.tasks WHERE service_name = $1";
+				sql_cmd = "SELECT * FROM dispatcher.tasks WHERE service_name=$1";
 				tasks = PQexecParams(self->dbconn,
 						sql_cmd,
 						1, 		// one param
 						NULL,	// let the backend deduce param type
-						name,
+						params,
 						NULL,	// don't need param lengths since param type is text
 						NULL,	// default to all text params
 						1);
 				if(PQresultStatus(tasks) == PGRES_TUPLES_OK) {
 					int taskID_fnum				 = PQfnumber(tasks, "taskID");
-					int status_fnum				 = PQfnumber(tasks, "service_name");
+					int status_fnum				 = PQfnumber(tasks, "status");
 					int dispatched_fnum			 = PQfnumber(tasks, "dispatched");
 					int create_time_fnum		 = PQfnumber(tasks, "create_time");
 					int timeout_old_fnum		 = PQfnumber(tasks, "timeout_old");
@@ -253,8 +266,10 @@ dispatcher_new()
 						char *tmp;
 						tmp = PQgetvalue(tasks, i, status_fnum);
 						unsigned int status = atoi(tmp);
+						//printf("         status = %u\n", status);
 						tmp = PQgetvalue(tasks, i, dispatched_fnum);
 						int dispatched = atoi(tmp);
+						//printf("         dispatched = %d\n", dispatched);
 						tmp = PQgetvalue(workers, i, timeout_old_fnum);
 						uint64_t timeout_old = atoul(tmp, strlen(tmp), 10);
 						tmp = PQgetvalue(workers, i, timeout_new_fnum);
@@ -273,23 +288,23 @@ dispatcher_new()
 						if(!task_get_dispatched(task) || // Task waits for dispatching
 							!((task_get_status(task) == 100) || (task_get_status(task) == FAIL))) { // Task dispatched but not done/failed
 							zlist_append(service->tasks, task); // Task not finished, need to take care of it
-							zlog_info(self->log, "Add task [%s] to dispatcher->tasks[%s] and wait for dispatch", task_get_taskID(task), service->name);
+							zlog_debug(self->log, "  Add task [%s] to dispatcher->tasks[%s] and wait for dispatch", task_get_taskID(task), service->name);
 						}
 						else {
-							zlog_info(self->log, "Add task [%s] to dispatcher->tasks[%s] only", task_get_taskID(task), service->name);
+							zlog_debug(self->log, "  Add task [%s] to dispatcher->tasks[%s] only", task_get_taskID(task), service->name);
 						}
 					}
 				}
 				else {
-				    zlog_error(self->log, "Failed in SQL command: %s", sql_cmd);
-				    zlog_error(self->log, "%s", PQerrorMessage(self->dbconn));
+				    zlog_error(self->log, "  Failed in SQL command: %s", sql_cmd);
+				    zlog_error(self->log, "  %s", PQerrorMessage(self->dbconn));
 				}
 				PQclear(tasks);
     		}
     	}
     	else {
-    		zlog_error(self->log, "Failed in SQL command: %s", sql_cmd);
-    		zlog_error(self->log, "%s", PQerrorMessage(self->dbconn));
+    		zlog_error(self->log, "  Failed in SQL command: %s", sql_cmd);
+    		zlog_error(self->log, "  %s", PQerrorMessage(self->dbconn));
     	}
     	PQclear(services);
 
@@ -301,9 +316,10 @@ dispatcher_new()
     	zlog_error(self->log, "Connection to database failed: %s", PQerrorMessage(self->dbconn));
     }
     // [DB] ========================================
-#if TASKPROC_IN_MULTITHREAD
-    if(pthread_mutex_init(&(self->sock_lock), NULL) == 0)
-    	self->threads = threadpool_create(6, 24, 0);
+#endif
+#ifdef TASKPROC_IN_MULTITHREAD
+	if(pthread_mutex_init(&(self->sock_lock), NULL) == 0)
+		self->threads = threadpool_create(6, 24, 0);
 #endif
     return self;
 }
@@ -319,8 +335,13 @@ dispatcher_destroy(dispatcher_t **self_p)
         if(self->services)	zhash_destroy(&self->services);
         if(self->workers)	zhash_destroy(&self->workers);
         if(self->tasks)		zhash_destroy(&self->tasks);
+#ifdef SAVE_STATE_TO_DATABASE
+ #if defined TASKPROC_IN_MULTITHREAD
+        pthread_mutex_destroy(&(self->db_write_lock));
+ #endif
         PQfinish(self->dbconn);
-#if TASKPROC_IN_MULTITHREAD
+#endif
+#ifdef TASKPROC_IN_MULTITHREAD
         if(self->threads) {
         	threadpool_destroy(self->threads, 0);
         	pthread_mutex_destroy(&(self->sock_lock));
@@ -347,6 +368,41 @@ service_destroy(void *argument)
     }
 }
 
+#ifdef SAVE_STATE_TO_DATABASE
+int
+DBExecCmd(PGconn *dbconn, pthread_mutex_t *lock, const char *cmd, ...)
+{
+	int ret = 0;
+	if(dbconn) {
+		// mutex_lock
+		if(lock) {
+			if(pthread_mutex_lock(lock) != 0) goto write_DB_return;
+		}
+
+		static char buf[1024];
+		int go_on_exec = 0;
+
+		va_list args;
+		va_start(args, cmd);
+		if(vsprintf(buf, cmd, args) > 0) go_on_exec = 1; // success
+		va_end(args);
+
+		//printf("write_DB: %s\n", buf);
+
+		if(go_on_exec) {
+			PGresult *op = PQexec(dbconn, buf);
+			if(PQresultStatus(op) == PGRES_COMMAND_OK)
+				ret = 1;
+		}
+
+		// mutex_unlock
+		if(lock) pthread_mutex_unlock(lock);
+	}
+write_DB_return:
+	return ret;
+}
+#endif
+
 static service_t *
 service_require(dispatcher_t *self, char *service_name)
 {
@@ -365,22 +421,33 @@ service_require(dispatcher_t *self, char *service_name)
         zhash_insert(self->services, name, service);
         zhash_freefn(self->services, name, service_destroy);
 
-        // [DB] ========================================
-		const char *param[1];
-		param[0] = service_name;
-		PGresult *op = PQexecParams(self->dbconn,
-				"INSERT INTO dispatcher.services (name) VALUES ($1)",
-				1,		// int nParams
-				NULL,	// Oid *paramTypes, let the backend deduce param type
-				param,	// char * const *paramValues,
-				NULL,	// int *paramLengths, don't need param lengths since param type is text
-				NULL,	// int *paramFormats, 0 - text, 1 - binary, default to all text params
-				1);		// int resultFormat, 0 - results in text foramt, 1 - binary
-		if(PQresultStatus(op) == PGRES_COMMAND_OK)
+#ifdef SAVE_STATE_TO_DATABASE
+        // FIXME: [DB] ========================================
+//		const char *param[1];
+//		param[0] = service_name;
+//		PGresult *op = PQexecParams(self->dbconn,
+//				"INSERT INTO dispatcher.services (name) VALUES ($1)",
+//				1,		// int nParams
+//				NULL,	// Oid *paramTypes, let the backend deduce param type
+//				param,	// char * const *paramValues,
+//				NULL,	// int *paramLengths, don't need param lengths since param type is text
+//				NULL,	// int *paramFormats, 0 - text, 1 - binary, default to all text params
+//				1);		// int resultFormat, 0 - results in text foramt, 1 - binary
+//		if(PQresultStatus(op) == PGRES_COMMAND_OK)
+//			zlog_debug(self->log, "Insert service [%s] to DB dispatcher.services success", service_name);
+//		else
+//			zlog_error(self->log, "Insert service [%s] to DB dispatcher.services failed: %s", service_name, PQerrorMessage(self->dbconn));
+ #if defined TASKPROC_IN_MULTITHREAD
+		if(DBExecCmd(self->dbconn, &self->db_write_lock,
+ #else
+		if(DBExecCmd(self->dbconn, NULL,
+ #endif
+				"INSERT INTO dispatcher.services (name) VALUES ('%s')", service_name))
 			zlog_debug(self->log, "Insert service [%s] to DB dispatcher.services success", service_name);
 		else
 			zlog_error(self->log, "Insert service [%s] to DB dispatcher.services failed: %s", service_name, PQerrorMessage(self->dbconn));
 		// [DB] ========================================
+#endif
     }
     else {
     	zlog_info(self->log, "%s service already existed", name);
@@ -400,23 +467,34 @@ worker_delete(worker_t *worker, int disconnect)
     	_sendcmd(worker->dispatcher, worker->address, 1, cmd_code2payload(DISCONNECT));
     }
 
+#ifdef SAVE_STATE_TO_DATABASE
     // [DB] remove worker from database
 	// [DB] ========================================
-	const char *param[1];
-	param[0] = worker->hostName;
-	PGresult *op = PQexecParams(worker->dispatcher->dbconn,
-			"DELETE FROM dispatcher.workers WHERE name = $1",
-			1,		// int nParams
-			NULL,	// Oid *paramTypes, let the backend deduce param type
-			param,	// char * const *paramValues,
-			NULL,	// int *paramLengths, don't need param lengths since param type is text
-			NULL,	// int *paramFormats, 0 - text, 1 - binary, default to all text params
-			1);		// int resultFormat, 0 - results in text foramt, 1 - binary
-	if(PQresultStatus(op) == PGRES_COMMAND_OK)
+//	const char *param[1];
+//	param[0] = worker->hostName;
+//	PGresult *op = PQexecParams(worker->dispatcher->dbconn,
+//			"DELETE FROM dispatcher.workers WHERE name=$1",
+//			1,		// int nParams
+//			NULL,	// Oid *paramTypes, let the backend deduce param type
+//			param,	// char * const *paramValues,
+//			NULL,	// int *paramLengths, don't need param lengths since param type is text
+//			NULL,	// int *paramFormats, 0 - text, 1 - binary, default to all text params
+//			1);		// int resultFormat, 0 - results in text foramt, 1 - binary
+//	if(PQresultStatus(op) == PGRES_COMMAND_OK)
+//		zlog_debug(worker->dispatcher->log, "Delete %s from DB dispatcher.workers success", worker->hostName);
+//	else
+//		zlog_error(worker->dispatcher->log, "Delete %s from DB dispatcher.workers failed: %s", worker->hostName, PQerrorMessage(worker->dispatcher->dbconn));
+ #if defined TASKPROC_IN_MULTITHREAD
+	if(DBExecCmd(worker->dispatcher->dbconn, &worker->dispatcher->db_write_lock,
+ #else
+	if(DBExecCmd(worker->dispatcher->dbconn, NULL,
+ #endif
+			"DELETE FROM dispatcher.workers WHERE name='%s'", worker->hostName))
 		zlog_debug(worker->dispatcher->log, "Delete %s from DB dispatcher.workers success", worker->hostName);
 	else
 		zlog_error(worker->dispatcher->log, "Delete %s from DB dispatcher.workers failed: %s", worker->hostName, PQerrorMessage(worker->dispatcher->dbconn));
 	// [DB] ========================================
+#endif
 
     // Remove worker from on-duty list of self->service
     if (worker->service) {
@@ -497,76 +575,27 @@ process_msg_from_client (dispatcher_t *self, zframe_t *sender, zmsg_t *msg)
 				zhash_insert (self->tasks, task_get_taskID(task), task);
 				zhash_freefn (self->tasks, task_get_taskID(task), task_destroy);
 				zlist_append (service->tasks, task); // For service_dispatch()
+#ifdef SAVE_STATE_TO_DATABASE
 				// FIXME: [DB] add task to database
 				// [DB] ========================================
-//				unsigned int status = task_get_status(task);
-//				int dispatched = task_get_dispatched(task);
-//				uint64_t createTime = task_get_createTime(task);
-//				uint64_t timeout_old = timeout_get_old(task_get_timeout(task));
-//				uint64_t timeout_new = timeout_get_new(task_get_timeout(task));
-//				uint64_t timeout_interval = timeout_get_interval(task_get_timeout(task));
-//				const char *params[12] = {
-//						task_get_taskID(task), (char *)&status, (char *)&dispatched,
-//						(char *)&createTime, (char *)&timeout_old, (char *)&timeout_new, (char *)&timeout_interval,
-//						task_get_serviceName(task), task_get_method(task), task_get_data(task), task_get_clientstr(task), task_get_workerstr(task)
-//				};
-//				int lengths[12] = {strlen(params[0]), sizeof(unsigned int), sizeof(int),
-//						sizeof(uint64_t), sizeof(uint64_t), sizeof(uint64_t), sizeof(uint64_t),
-//						strlen(params[7]), strlen(params[8]), strlen(params[9]), strlen(params[10]), strlen(params[11])
-//				};
-//				int binarys[12] = {1, 0, 0,
-//						0, 0, 0, 0,
-//						1, 1, 1, 1, 1
-//				};
-//				PGresult *op = PQexecParams(self->dbconn,
-//						"INSERT INTO dispatcher.tasks \
-//						(taskID, status, dispatched, \
-//						create_time, timeout_old, timeout_new, timeout_interval, \
-//						service_name, method, data, client_str, worker_str) \
-//						VALUES \
-//						($1::text, $2::dispatcher.BIGINT_UNSIGNED, $3::int, \
-//						$4::dispatcher.BIGINT_UNSIGNED, $5::dispatcher.BIGINT_UNSIGNED, $6::dispatcher.BIGINT_UNSIGNED, $7::dispatcher.BIGINT_UNSIGNED, \
-//						$8::text, $9::text, $10::text, $11::text, $12::text)",
-//						12,		// int nParams
-//						NULL,	// Oid *paramTypes, let the backend deduce param type
-//						params,	// char * const *paramValues,
-//						lengths,// int *paramLengths, don't need param lengths since param type is text
-//						binarys,// int *paramFormats, 0 - text, 1 - binary, default to all text params
-//						1);		// int resultFormat, 0 - results in text foramt, 1 - binary
-				char *status = uitoa(task_get_status(task));
-				char *dispatched = uitoa(task_get_dispatched(task));
-				char *create_time = ultoa(task_get_createTime(task));
-				char *timeout_old = ultoa(timeout_get_old(task_get_timeout(task)));
-				char *timeout_new = ultoa(timeout_get_new(task_get_timeout(task)));
-				char *timeout_interval = ultoa(timeout_get_interval(task_get_timeout(task)));
-				const char *params[12] = {
-						task_get_taskID(task), status, dispatched,
-						create_time, timeout_old, timeout_new, timeout_interval,
-						task_get_serviceName(task), task_get_method(task),task_get_data(task), task_get_client_str(task), task_get_worker_str(task)
-				};
-				PGresult *op = PQexecParams(self->dbconn,
-						"INSERT INTO dispatcher.tasks \
-						(taskID, status, dispatched, \
+ #if defined TASKPROC_IN_MULTITHREAD
+				if(DBExecCmd(self->dbconn, &self->db_write_lock,
+ #else
+				if(DBExecCmd(self->dbconn, NULL,
+ #endif
+						"INSERT INTO dispatcher.tasks (taskID, status, dispatched, \
 						create_time, timeout_old, timeout_new, timeout_interval, \
 						service_name, method, data, client_str, worker_str) \
-						VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
-						12,		// int nParams
-						NULL,	// Oid *paramTypes, let the backend deduce param type
-						params,	// char * const *paramValues,
-						NULL,	// int *paramLengths, don't need param lengths since param type is text
-						NULL,	// int *paramFormats, 0 - text, 1 - binary, default to all text params
-						1);		// int resultFormat, 0 - results in text foramt, 1 - binary
-				if(PQresultStatus(op) == PGRES_COMMAND_OK)
+						VALUES ('%s', %d, %d, %lu, %lu, %lu, %lu, '%s', '%s', '%s', '%s', '%s')",
+						task_get_taskID(task), task_get_status(task), task_get_dispatched(task),
+						task_get_createTime(task), timeout_get_old(task_get_timeout(task)), timeout_get_new(task_get_timeout(task)), timeout_get_interval(task_get_timeout(task)),
+						task_get_serviceName(task), task_get_method(task),task_get_data(task), task_get_client_str(task), task_get_worker_str(task)
+						))
 					zlog_debug(self->log, "Insert task ID [%s] to DB dispatcher.tasks success", task_get_taskID(task));
 				else
 					zlog_error(self->log, "Insert task ID [%s] to DB dispatcher.tasks failed: %s", task_get_taskID(task), PQerrorMessage(self->dbconn));
-				FREE(status);
-				FREE(dispatched);
-				FREE(create_time);
-				FREE(timeout_old);
-				FREE(timeout_new);
-				FREE(timeout_interval);
 				// [DB] ========================================
+#endif
 
 				zlog_debug(self->log, "Create task:");
 				zlog_debug(self->log, "  taskID = %s", task_get_taskID(task) ? task_get_taskID(task) : "NULL");
@@ -765,100 +794,31 @@ process_msg_from_worker (dispatcher_t *self, zframe_t *sender, zmsg_t *msg)
 				zhash_insert(self->workers, hostName, worker);
 				zhash_freefn(self->workers, hostName, worker_destroy);
 				zlist_append(worker->service->workers, worker);
+#ifdef SAVE_STATE_TO_DATABASE
 				// FIXME: [DB] add worker to database
 				// [DB] ========================================
-//				uint64_t deadtime = heartbeat_get_deadtime(worker->heartbeat);
-//				uint64_t keepalive = heartbeat_get_keepalive(worker->heartbeat);
-//				uint64_t timeout_old = timeout_get_old(heartbeat_get_timeout(worker->heartbeat));
-//				uint64_t timeout_new = timeout_get_new(heartbeat_get_timeout(worker->heartbeat));
-//				uint64_t timeout_interval = timeout_get_interval(heartbeat_get_timeout(worker->heartbeat));
-//				int retries = heartbeat_get_retries(worker->heartbeat);
-//				const char *params[8] = {
-//						worker->hostName, worker->service->name,
-//						(char *)&deadtime, (char *)&keepalive,
-//						(char *)&timeout_old, (char *)&timeout_new, (char *)&timeout_interval, (char *)&retries
-//				};
-//				int lengths[8] = {strlen(params[0]), strlen(params[1]),
-//						sizeof(uint64_t), sizeof(uint64_t),
-//						sizeof(uint64_t), sizeof(uint64_t), sizeof(uint64_t), sizeof(int)
-//				};
-//				int binarys[8] = {1, 1, 0, 0, 0, 0, 0, 0};
-//				PGresult *op = PQexecParams(self->dbconn,
-//						"INSERT INTO dispatcher.workers \
-//						(name, service_name, \
-//						heartbeat_deadtime, heartbeat_keepalive, \
-//						timeout_old, timeout_new, timeout_interval, retries) \
-//						VALUES \
-//						($1::text, $2::text, \
-//						$3::dispatcher.BIGINT_UNSIGNED, $4::dispatcher.BIGINT_UNSIGNED, \
-//						$5::dispatcher.BIGINT_UNSIGNED, $6::dispatcher.BIGINT_UNSIGNED, $7::dispatcher.BIGINT_UNSIGNED, $8::int)",
-//						8,		// int nParams
-//						NULL,	// Oid *paramTypes, let the backend deduce param type
-//						params,	// char * const *paramValues,
-//						lengths,// int *paramLengths, don't need param lengths since param type is text
-//						binarys,// int *paramFormats, 0 - text, 1 - binary, default to all text params
-//						1);		// int resultFormat, 0 - results in text foramt, 1 - binary
-//				// ------
-//				char deadtime[24], keepalive[24], timeout_old[24], timeout_new[24], timeout_interval[24], retries[24];
-//				snprintf(deadtime, 23, "%lu", heartbeat_get_deadtime(worker->heartbeat));
-//				snprintf(keepalive, 23, "%lu", heartbeat_get_keepalive(worker->heartbeat));
-//				snprintf(timeout_old, 23, "%lu", timeout_get_old(heartbeat_get_timeout(worker->heartbeat)));
-//				snprintf(timeout_new, 23, "%lu", timeout_get_new(heartbeat_get_timeout(worker->heartbeat)));
-//				snprintf(timeout_interval, 23, "%lu", timeout_get_interval(heartbeat_get_timeout(worker->heartbeat)));
-//				snprintf(retries, 23, "%d", heartbeat_get_retries(worker->heartbeat));
-//				const char *params[8] = {
-//						worker->hostName, worker->service->name,
-//						deadtime, keepalive, timeout_old, timeout_new, timeout_interval, retries
-//				};
-//				PGresult *op = PQexecParams(self->dbconn,
-//						"INSERT INTO dispatcher.workers \
-//						(name, service_name, \
-//						heartbeat_deadtime, heartbeat_keepalive, \
-//						timeout_old, timeout_new, timeout_interval, retries) \
-//						VALUES \
-//						($1::text, $2::text, \
-//						to_number($3::text, \'9999999999999999999999\'), to_number($4::text, \'9999999999999999999999\'), \
-//						to_number($5::text, \'9999999999999999999999\'), to_number($6::text, \'9999999999999999999999\'), to_number($7::text, \'9999999999999999999999\'), to_number($8::text, \'9999999999999999999999\'))",
-//						8,		// int nParams
-//						NULL,	// Oid *paramTypes, let the backend deduce param type
-//						params,	// char * const *paramValues,
-//						NULL,
-//						NULL,
-//						1);		// int resultFormat, 0 - results in text foramt, 1 - binary
-//				// --------
-				char *deadtime = ultoa(heartbeat_get_deadtime(worker->heartbeat));
-				char *keepalive = ultoa(heartbeat_get_keepalive(worker->heartbeat));
-				char *timeout_old = ultoa(timeout_get_old(heartbeat_get_timeout(worker->heartbeat)));
-				char *timeout_new = ultoa(timeout_get_new(heartbeat_get_timeout(worker->heartbeat)));
-				char *timeout_interval = ultoa(timeout_get_interval(heartbeat_get_timeout(worker->heartbeat)));
-				char *retries = ultoa(heartbeat_get_retries(worker->heartbeat));
-				const char *params[8] = {
-						worker->hostName, worker->service->name,
-						deadtime, keepalive, timeout_old, timeout_new, timeout_interval, retries
-				};
-				PGresult *op = PQexecParams(self->dbconn,
+ #if defined TASKPROC_IN_MULTITHREAD
+				if(DBExecCmd(self->dbconn, &self->db_write_lock,
+ #else
+				if(DBExecCmd(self->dbconn, NULL,
+ #endif
 						"INSERT INTO dispatcher.workers \
 						(name, service_name, \
 						heartbeat_deadtime, heartbeat_keepalive, \
 						timeout_old, timeout_new, timeout_interval, retries) \
-						VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-						8,		// int nParams
-						NULL,	// Oid *paramTypes, let the backend deduce param type
-						params,	// char * const *paramValues,
-						NULL,	// int *paramLengths, don't need param lengths since param type is text
-						NULL,	// int *paramFormats, 0 - text, 1 - binary, default to all text params
-						1);		// int resultFormat, 0 - results in text foramt, 1 - binary
-				if(PQresultStatus(op) == PGRES_COMMAND_OK)
+						VALUES ('%s', '%s', %lu, %lu, %lu, %lu, %lu, %d)",
+						worker->hostName, worker->service->name,
+						heartbeat_get_deadtime(worker->heartbeat), heartbeat_get_keepalive(worker->heartbeat),
+						timeout_get_old(heartbeat_get_timeout(worker->heartbeat)),
+						timeout_get_new(heartbeat_get_timeout(worker->heartbeat)),
+						timeout_get_interval(heartbeat_get_timeout(worker->heartbeat)),
+						heartbeat_get_retries(worker->heartbeat)
+						))
 					zlog_debug(self->log, "Insert worker [%s] to DB dispatcher.workers success", worker->hostName);
 				else
 					zlog_error(self->log, "Insert worker [%s] to DB dispatcher.workers failed: %s", worker->hostName, PQerrorMessage(self->dbconn));
-				FREE(deadtime);
-				FREE(keepalive);
-				FREE(timeout_old);
-				FREE(timeout_new);
-				FREE(timeout_interval);
-				FREE(retries);
 				// [DB] ========================================
+#endif
 
 				_sendcmd(self, worker->address,	2, cmd_code2payload(SERVICEREGREP), stat_code2payload(S_OK)); // reply worker registration success
 				zlog_info(self->log, "Receive SERVICEREGREQ from worker [%s] and register service type [%s], register success", worker->hostName, worker->service->name);
@@ -880,13 +840,67 @@ process_msg_from_worker (dispatcher_t *self, zframe_t *sender, zmsg_t *msg)
 				if(stat_payload2code(code) == S_OK) {
 					zlog_info(self->log, "Receive TASKDISREP [S_OK] for task ID [%s] from worker [%s], update status to 0", taskid, hostName);
 					task_set_status(task, 0);
-					// TODO: [DB] update task status to 0 as initial in database
+#ifdef SAVE_STATE_TO_DATABASE
+					// FIXME: [DB] update task status to 0 as initial in database
+					// [DB] ========================================
+//					const char *params[1] = { taskid };
+//					PGresult *op = PQexecParams(worker->dispatcher->dbconn,
+//							"UPDATE dispatcher.tasks SET status='0' WHERE taskID=$1",
+//							1,		// int nParams
+//							NULL,	// Oid *paramTypes, let the backend deduce param type
+//							params,	// char * const *paramValues,
+//							NULL,	// int *paramLengths, don't need param lengths since param type is text
+//							NULL,	// int *paramFormats, 0 - text, 1 - binary, default to all text params
+//							1);		// int resultFormat, 0 - results in text foramt, 1 - binary
+//					if(PQresultStatus(op) == PGRES_COMMAND_OK)
+//						zlog_debug(worker->dispatcher->log, "Update task [%s] status to [0%%] to DB dispatcher.tasks success", taskid);
+//					else
+//						zlog_error(worker->dispatcher->log, "Update task [%s] status to [0%%] to DB dispatcher.tasks failed: %s", taskid, PQerrorMessage(worker->dispatcher->dbconn));
+ #if defined TASKPROC_IN_MULTITHREAD
+					if(DBExecCmd(worker->dispatcher->dbconn, &worker->dispatcher->db_write_lock,
+ #else
+					if(DBExecCmd(worker->dispatcher->dbconn, NULL,
+ #endif
+							"UPDATE dispatcher.tasks SET status='0' WHERE taskID='%s'", taskid))
+						zlog_debug(worker->dispatcher->log, "Update task [%s] status to [0%%] to DB dispatcher.tasks success", taskid);
+					else
+						zlog_error(worker->dispatcher->log, "Update task [%s] status to [0%%] to DB dispatcher.tasks failed: %s", taskid, PQerrorMessage(worker->dispatcher->dbconn));
+					// [DB] ========================================
+#endif
 				}
 				// receive S_FAIL, set task status to FAIL
 				else {
 					zlog_info(self->log, "Receive TASKDISREP [S_FAIL] for task ID [%s] from worker [%s], update status to FAIL", taskid, hostName);
 					task_set_status(task, FAIL);
-					// TODO: [DB] update task status to FAIL in database
+#ifdef SAVE_STATE_TO_DATABASE
+					// FIXME: [DB] update task status to FAIL in database
+					// [DB] ========================================
+//					char *per_str = uitoa(FAIL);
+//					const char *params[2] = { per_str, taskid };
+//					PGresult *op = PQexecParams(worker->dispatcher->dbconn,
+//							"UPDATE dispatcher.tasks SET status=$1 WHERE taskID=$2",
+//							2,		// int nParams
+//							NULL,	// Oid *paramTypes, let the backend deduce param type
+//							params,	// char * const *paramValues,
+//							NULL,	// int *paramLengths, don't need param lengths since param type is text
+//							NULL,	// int *paramFormats, 0 - text, 1 - binary, default to all text params
+//							1);		// int resultFormat, 0 - results in text foramt, 1 - binary
+//					if(PQresultStatus(op) == PGRES_COMMAND_OK)
+//						zlog_debug(worker->dispatcher->log, "Update task [%s] status to FAIL(%s) to DB dispatcher.tasks success", taskid, per_str);
+//					else
+//						zlog_error(worker->dispatcher->log, "Update task [%s] status to FAIL(%s) to DB dispatcher.tasks failed: %s", taskid, per_str, PQerrorMessage(worker->dispatcher->dbconn));
+//					FREE(per_str);
+ #if defined TASKPROC_IN_MULTITHREAD
+					if(DBExecCmd(worker->dispatcher->dbconn, &worker->dispatcher->db_write_lock,
+ #else
+					if(DBExecCmd(worker->dispatcher->dbconn, NULL,
+ #endif
+							"UPDATE dispatcher.tasks SET status=%d WHERE taskID='%s'", FAIL, taskid))
+						zlog_debug(worker->dispatcher->log, "Update task [%s] status to FAIL(%d) to DB dispatcher.tasks success", taskid, FAIL);
+					else
+						zlog_error(worker->dispatcher->log, "Update task [%s] status to FAIL(%d) to DB dispatcher.tasks failed: %s", taskid, FAIL, PQerrorMessage(worker->dispatcher->dbconn));
+					// [DB] ========================================
+#endif
 				}
 			}
 			// Task not-found, discard it silently
@@ -914,7 +928,35 @@ process_msg_from_worker (dispatcher_t *self, zframe_t *sender, zmsg_t *msg)
 			if(task) {
 				zlog_info(self->log, "Receive TASKUPDATE [%3u%%] for task ID [%s] from worker [%s], update it", per, taskid, hostName);
 				task_set_status(task, per);
-				// TODO: [DB] update task status in database
+#ifdef SAVE_STATE_TO_DATABASE
+				// FIXME: [DB] update task status in database
+				// [DB] ========================================
+//				char *per_str = uitoa(per);
+//				const char *params[2] = { per_str, taskid };
+//				PGresult *op = PQexecParams(worker->dispatcher->dbconn,
+//						"UPDATE dispatcher.tasks SET status=$1 WHERE taskID=$2",
+//						2,		// int nParams
+//						NULL,	// Oid *paramTypes, let the backend deduce param type
+//						params,	// char * const *paramValues,
+//						NULL,	// int *paramLengths, don't need param lengths since param type is text
+//						NULL,	// int *paramFormats, 0 - text, 1 - binary, default to all text params
+//						1);		// int resultFormat, 0 - results in text foramt, 1 - binary
+//				if(PQresultStatus(op) == PGRES_COMMAND_OK)
+//					zlog_debug(worker->dispatcher->log, "Update task [%s] status to [%3u%%] to DB dispatcher.tasks success", taskid, per);
+//				else
+//					zlog_error(worker->dispatcher->log, "Update task [%s] status to [%3u%%] to DB dispatcher.tasks failed: %s", taskid, per, PQerrorMessage(worker->dispatcher->dbconn));
+//				FREE(per_str);
+ #if defined TASKPROC_IN_MULTITHREAD
+				if(DBExecCmd(worker->dispatcher->dbconn, &worker->dispatcher->db_write_lock,
+ #else
+				if(DBExecCmd(worker->dispatcher->dbconn, NULL,
+ #endif
+						"UPDATE dispatcher.tasks SET status=%d WHERE taskID='%s'", per, taskid))
+					zlog_debug(worker->dispatcher->log, "Update task [%s] status to [%3u%%] to DB dispatcher.tasks success", taskid, per);
+				else
+					zlog_error(worker->dispatcher->log, "Update task [%s] status to [%3u%%] to DB dispatcher.tasks failed: %s", taskid, per, PQerrorMessage(worker->dispatcher->dbconn));
+				// [DB] ========================================
+#endif
 			}
 			// Task not-found
 			else {
@@ -946,7 +988,35 @@ process_msg_from_worker (dispatcher_t *self, zframe_t *sender, zmsg_t *msg)
     	// Worker exists, reset heartbeat retries
     	if(worker_exists) {
     		heartbeat_reset_retries(worker->heartbeat);
-    		// TODO: [DB] update worker->heartbeat->retries in database
+#ifdef SAVE_STATE_TO_DATABASE
+    		// FIXME: [DB] update worker->heartbeat->retries in database
+    		// [DB] ========================================
+//			char *retries_str = uitoa(heartbeat_get_retries(worker->heartbeat));
+//			const char *params[2] = { retries_str, worker->hostName };
+//			PGresult *op = PQexecParams(worker->dispatcher->dbconn,
+//					"UPDATE dispatcher.workers SET retries=$1 WHERE name=$2",
+//					2,		// int nParams
+//					NULL,	// Oid *paramTypes, let the backend deduce param type
+//					params,	// char * const *paramValues,
+//					NULL,	// int *paramLengths, don't need param lengths since param type is text
+//					NULL,	// int *paramFormats, 0 - text, 1 - binary, default to all text params
+//					1);		// int resultFormat, 0 - results in text foramt, 1 - binary
+//			if(PQresultStatus(op) == PGRES_COMMAND_OK)
+//				zlog_debug(worker->dispatcher->log, "Update worker [%s]'s retries to %s to DB dispatcher.workers success", worker->hostName, retries_str);
+//			else
+//				zlog_error(worker->dispatcher->log, "Update worker [%s]'s retries to %s to DB dispatcher.workers failed: %s", worker->hostName, retries_str, PQerrorMessage(worker->dispatcher->dbconn));
+//			FREE(retries_str);
+ #if defined TASKPROC_IN_MULTITHREAD
+			if(DBExecCmd(worker->dispatcher->dbconn, &worker->dispatcher->db_write_lock,
+ #else
+			if(DBExecCmd(worker->dispatcher->dbconn, NULL,
+ #endif
+					"UPDATE dispatcher.workers SET retries=%d WHERE name='%s'", heartbeat_get_retries(worker->heartbeat), worker->hostName))
+				zlog_debug(worker->dispatcher->log, "Update worker [%s]'s retries to %d to DB dispatcher.workers success", worker->hostName, heartbeat_get_retries(worker->heartbeat));
+			else
+				zlog_error(worker->dispatcher->log, "Update worker [%s]'s retries to %d to DB dispatcher.workers failed: %s", worker->hostName, heartbeat_get_retries(worker->heartbeat), PQerrorMessage(worker->dispatcher->dbconn));
+			// [DB] ========================================
+#endif
     	}
 //    	// Worker doesn't exist but send HEARTBEAT, disconnect it
 //    	else
@@ -1014,18 +1084,55 @@ _service_dispatch(void *ptr)
 	for(worker_t *worker = (worker_t *)zlist_first(self->workers);
 			worker != NULL;
 			worker = (worker_t *)zlist_next(self->workers)) {
-		// TODO: [DB] update worker heartbeat as in heartbeat_check()
+#ifdef SAVE_STATE_TO_DATABASE
+		// FIXME: [DB] if heartbeat retries is different from previous, update DB
+		int retries_old = heartbeat_get_retries(worker->heartbeat);
+#endif
 		if(heartbeat_check(worker->heartbeat) == 0) {
 			zlog_info(self->dispatcher->log, "Worker [%s] was dead, delete it", worker->hostName);
 			worker_delete(worker, 1);
+			// Due to worker delete, no need to update heartbeat retries in DB
 		}
+#ifdef SAVE_STATE_TO_DATABASE
+		// FIXME: [DB] if heartbeat retries is different from previous, update DB
+		// [DB] ========================================
+		else {
+			int retries_new = heartbeat_get_retries(worker->heartbeat);
+			if(retries_new != retries_old) {
+//				char *retries_str = uitoa(retries_new);
+//				const char *params[2] = { retries_str, worker->hostName };
+//				PGresult *op = PQexecParams(worker->dispatcher->dbconn,
+//						"UPDATE dispatcher.workers SET retries=$1 WHERE name=$2",
+//						2,		// int nParams
+//						NULL,	// Oid *paramTypes, let the backend deduce param type
+//						params,	// char * const *paramValues,
+//						NULL,	// int *paramLengths, don't need param lengths since param type is text
+//						NULL,	// int *paramFormats, 0 - text, 1 - binary, default to all text params
+//						1);		// int resultFormat, 0 - results in text foramt, 1 - binary
+//				if(PQresultStatus(op) == PGRES_COMMAND_OK)
+//					zlog_debug(worker->dispatcher->log, "Update worker [%s]'s retries to %s to DB dispatcher.workers success", worker->hostName, retries_str);
+//				else
+//					zlog_error(worker->dispatcher->log, "Update worker [%s]'s retries to %s to DB dispatcher.workers failed: %s", worker->hostName, retries_str, PQerrorMessage(worker->dispatcher->dbconn));
+//				FREE(retries_str);
+ #if defined TASKPROC_IN_MULTITHREAD
+				if(DBExecCmd(worker->dispatcher->dbconn, &worker->dispatcher->db_write_lock,
+ #else
+				if(DBExecCmd(worker->dispatcher->dbconn, NULL,
+ #endif
+						"UPDATE dispatcher.workers SET retries=%d WHERE name='%s'",	retries_new, worker->hostName))
+					zlog_debug(worker->dispatcher->log, "Update worker [%s]'s retries to %d to DB dispatcher.workers success", worker->hostName, retries_new);
+				else
+					zlog_error(worker->dispatcher->log, "Update worker [%s]'s retries to %d to DB dispatcher.workers failed: %s", worker->hostName, retries_new, PQerrorMessage(worker->dispatcher->dbconn));
+
+			}
+		}
+		// [DB] ========================================
+#endif
 	}
 
-    int count = zlist_size(self->tasks);
-    if(count > 0)
-    	zlog_debug(self->dispatcher->log, "[%s] service dispatching:", self->name);
-    else
-    	goto _service_dispatch_return;
+    size_t count = zlist_size(self->tasks);
+    if(count > 0)	zlog_debug(self->dispatcher->log, "[%s] service dispatching:", self->name);
+    else			goto _service_dispatch_return;
 
     while(count-- > 0) {
         task_t *task = (task_t *)zlist_pop(self->tasks);
@@ -1037,11 +1144,39 @@ _service_dispatch(void *ptr)
 
         // If task is timeout'd, remove it by not pushing back to task list and change status to FAIL
         //
-        // TODO: [DB] update task timeout as in task_get_expired()
+        // FIXME: [DB] update task timeout as in task_get_expired() <--- don't need to update anything
         if(task_get_expired(task)) {
         	zlog_info(self->dispatcher->log, "Task [%s] was timeout'd, change status to FAIL and won't be dispatch anymore", task_get_taskID(task));
         	task_set_status(task, FAIL);
-        	// TODO: [DB] update task status to FAIL in database
+#ifdef SAVE_STATE_TO_DATABASE
+        	// FIXME: [DB] update task status to FAIL in database
+        	// [DB] ========================================
+//			char *per_str = uitoa(FAIL);
+//			const char *params[2] = { per_str, task_get_taskID(task) };
+//			PGresult *op = PQexecParams(self->dispatcher->dbconn,
+//					"UPDATE dispatcher.tasks SET status=$1 WHERE taskID=$2",
+//					2,		// int nParams
+//					NULL,	// Oid *paramTypes, let the backend deduce param type
+//					params,	// char * const *paramValues,
+//					NULL,	// int *paramLengths, don't need param lengths since param type is text
+//					NULL,	// int *paramFormats, 0 - text, 1 - binary, default to all text params
+//					1);		// int resultFormat, 0 - results in text foramt, 1 - binary
+//			if(PQresultStatus(op) == PGRES_COMMAND_OK)
+//				zlog_debug(self->dispatcher->log, "Update task [%s] status to FAIL(%s) to DB dispatcher.tasks success", task_get_taskID(task), per_str);
+//			else
+//				zlog_error(self->dispatcher->log, "Update task [%s] status to FAIL(%s) to DB dispatcher.tasks failed: %s", task_get_taskID(task), per_str, PQerrorMessage(self->dispatcher->dbconn));
+//			FREE(per_str);
+#if defined TASKPROC_IN_MULTITHREAD
+        	if(DBExecCmd(self->dispatcher->dbconn, &self->dispatcher->db_write_lock,
+#else
+        	if(DBExecCmd(self->dispatcher->dbconn, NULL,
+#endif
+        			"UPDATE dispatcher.tasks SET status=%d WHERE taskID='%s'", FAIL, task_get_taskID(task)))
+				zlog_debug(self->dispatcher->log, "Update task [%s] status to FAIL(%d) to DB dispatcher.tasks success", task_get_taskID(task), FAIL);
+			else
+				zlog_error(self->dispatcher->log, "Update task [%s] status to FAIL(%d) to DB dispatcher.tasks failed: %s", task_get_taskID(task), FAIL, PQerrorMessage(self->dispatcher->dbconn));
+			// [DB] ========================================
+#endif
 			continue;
         }
 
@@ -1064,9 +1199,10 @@ _service_dispatch(void *ptr)
 			// To service
 			else {
 				// pop up the first worker to process task
-				worker = (worker_t*)zlist_pop(self->workers);
-				task_set_worker(task, worker->address);
-				// TODO: [DB] update task worker_str in database
+				if(zlist_size(self->workers) > 0) {
+					worker = (worker_t*)zlist_pop(self->workers);
+					task_set_worker(task, worker->address);
+				}
 			}
 
 			if(worker) {
@@ -1074,7 +1210,33 @@ _service_dispatch(void *ptr)
 				_sendcmd(self->dispatcher, worker->address,
 						4, cmd_code2payload(TASKDISREQ), task_get_taskID(task), task_get_method(task), task_get_data(task));
 				task_set_dispatched(task, 1);
-				// TODO: [DB] update task dispatched to 1 in database
+#ifdef SAVE_STATE_TO_DATABASE
+				// FIXME: [DB] update task worker_str and dispatched to 1 in database
+				// [DB] ========================================
+//				const char *params[2] = { task_get_worker_str(task), task_get_taskID(task) };
+//				PGresult *op = PQexecParams(self->dispatcher->dbconn,
+//						"UPDATE dispatcher.tasks SET dispatched='1', worker_str=$1 WHERE taskID=$2",
+//						2,		// int nParams
+//						NULL,	// Oid *paramTypes, let the backend deduce param type
+//						params,	// char * const *paramValues,
+//						NULL,	// int *paramLengths, don't need param lengths since param type is text
+//						NULL,	// int *paramFormats, 0 - text, 1 - binary, default to all text params
+//						1);		// int resultFormat, 0 - results in text foramt, 1 - binary
+//				if(PQresultStatus(op) == PGRES_COMMAND_OK)
+//					zlog_debug(self->dispatcher->log, "Update task [%s] dispatched to 1 to DB dispatcher.tasks success", task_get_taskID(task));
+//				else
+//					zlog_error(self->dispatcher->log, "Update task [%s] dispatched to 1 to DB dispatcher.tasks failed: %s", task_get_taskID(task), PQerrorMessage(self->dispatcher->dbconn));
+ #if defined TASKPROC_IN_MULTITHREAD
+				if(DBExecCmd(self->dispatcher->dbconn, &self->dispatcher->db_write_lock,
+ #else
+				if(DBExecCmd(self->dispatcher->dbconn, NULL,
+ #endif
+						"UPDATE dispatcher.tasks SET dispatched='1', worker_str='%s' WHERE taskID='%s'", task_get_worker_str(task), task_get_taskID(task)))
+					zlog_debug(self->dispatcher->log, "Update task [%s] dispatched to 1 to DB dispatcher.tasks success", task_get_taskID(task));
+				else
+					zlog_error(self->dispatcher->log, "Update task [%s] dispatched to 1 to DB dispatcher.tasks failed: %s", task_get_taskID(task), PQerrorMessage(self->dispatcher->dbconn));
+				// [DB] ========================================
+#endif
 
 				// Workers are scheduled in the round-robin fashion
 				zlist_append(self->workers, worker); // push worker back to on-duty list
@@ -1093,10 +1255,11 @@ _service_dispatch_all(const char *key, void *item, void *argument)
 {
 	service_t *service = item;
 	if(service) {
-#if TASKPROC_IN_MULTITHREAD
+#ifdef TASKPROC_IN_MULTITHREAD
 		if(service->dispatcher->threads) {
-			if(threadpool_add(service->dispatcher->threads, &_service_dispatch, service, 0) == 0)
-				zlog_debug(service->dispatcher->log, "Dispatch [%s] service by threadpool", service->name);
+			if(threadpool_add(service->dispatcher->threads, &_service_dispatch, service, 0) == 0) {
+				; //zlog_debug(service->dispatcher->log, "Dispatch [%s] service by threadpool", service->name);
+			}
 			else {
 				zlog_debug(service->dispatcher->log, "Dispatch [%s] service by current thread due to no thread available from threadpool", service->name);
 				_service_dispatch(service);
@@ -1181,7 +1344,7 @@ int main(int argc, char **argv)
 	// Get and process messages forever or until interrupted
 	while(!quit) {
 		zmq_pollitem_t items [] = {	{ self->socket,  0, ZMQ_POLLIN, 0 } };
-#if TASKPROC_IN_MULTITHREAD
+#ifdef TASKPROC_IN_MULTITHREAD
 		if(self->threads) {
 			if(pthread_mutex_lock(&(self->sock_lock)) != 0) {
 				zlog_error(self->log, "Unable to lock mutex for zmsg_poll()");
@@ -1190,7 +1353,7 @@ int main(int argc, char **argv)
 		}
 #endif
 		int rc = zmq_poll (items, 1, 100 * ZMQ_POLL_MSEC);
-#if TASKPROC_IN_MULTITHREAD
+#ifdef TASKPROC_IN_MULTITHREAD
 		if(self->threads) {
 			if(pthread_mutex_unlock(&(self->sock_lock)) != 0) {
 				zlog_error(self->log,"Failed to unlock mutex for zmsg_poll(), terminated...");
@@ -1202,7 +1365,7 @@ int main(int argc, char **argv)
 
 		//  Process next input message, if any
 		if (items [0].revents & ZMQ_POLLIN) {
-#if TASKPROC_IN_MULTITHREAD
+#ifdef TASKPROC_IN_MULTITHREAD
 			if(self->threads) {
 				if(pthread_mutex_lock(&(self->sock_lock)) != 0) {
 					zlog_error(self->log, "Unable to lock mutex for zmsg_recv(), do not receive message");
@@ -1211,7 +1374,7 @@ int main(int argc, char **argv)
 			}
 #endif
 			zmsg_t *msg = zmsg_recv(self->socket);
-#if TASKPROC_IN_MULTITHREAD
+#ifdef TASKPROC_IN_MULTITHREAD
 			if(self->threads) {
 				if(pthread_mutex_unlock(&(self->sock_lock)) != 0) {
 					zlog_error(self->log,"Failed to unlock mutex for zmsg_recv(), terminated...");
