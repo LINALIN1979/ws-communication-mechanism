@@ -247,7 +247,7 @@ uitoa(unsigned int value)
 	while(buf) {
 		int required = snprintf(buf, buf_len, "%u", value);
 		if(required >= buf_len) {				// buf is not enough for percentage output, enlarge it
-			buf_len = required;
+			buf_len = required + 1;
 			buf = realloc(buf, buf_len);
 		}
 		else if(required < 0)	return NULL;	// snprintf error happens
@@ -266,7 +266,7 @@ ultoa(uint64_t value)
 	while(buf) {
 		int required = snprintf(buf, buf_len, "%lu", value);
 		if(required >= buf_len) {				// buf is not enough for percentage output, enlarge it
-			buf_len = required;
+			buf_len = required + 1;
 			buf = realloc(buf, buf_len);
 		}
 		else if(required < 0)	return NULL;	// snprintf error happens
