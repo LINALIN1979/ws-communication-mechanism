@@ -132,7 +132,7 @@ _heartbeat_sendfn(void *param)
 
 //  Constructor of dispatcher
 static dispatcher_t *
-dispatcher_new()
+dispatcher_new(char *dbip, char *dbport, char *dbname, char *dbuser, char *dbpwd)
 {
 	dispatcher_t *self = (dispatcher_t *) zmalloc (sizeof (dispatcher_t));
 	zlog_init("log.conf");
@@ -152,7 +152,9 @@ dispatcher_new()
  #if defined TASKPROC_IN_MULTITHREAD
 	pthread_mutex_init(&(self->db_write_lock), NULL);
  #endif
-    self->dbconn = PQconnectdb("dbname=testdb user=test password=test");
+	char db_access_str[40 + strlen(dbname) + strlen(dbuser)+ strlen(dbpwd)];
+	sprintf(db_access_str, "hostaddr=%s port=%s dbname=%s user=%s password=%s", dbip, dbport, dbname, dbuser, dbpwd);
+    self->dbconn = PQconnectdb(db_access_str);
     if(PQstatus(self->dbconn) == CONNECTION_OK) {
     	zlog_debug(self->log, "Rebuild services/workers/tasks from database");
 
@@ -281,8 +283,14 @@ dispatcher_new()
 						zhash_insert(self->tasks, task_get_taskID(task), task);
 						zhash_freefn(self->tasks, task_get_taskID(task), task_destroy);
 
-						if(!task_get_dispatched(task) || // Task waits for dispatching
-							!((task_get_status(task) == 100) || (task_get_status(task) == FAIL))) { // Task dispatched but not done/failed
+						// What kinds of tasks still needs to take care
+						// 1. !dispatched and not FAIL	(O)
+						// 2. !dispatched and FAIL		(X) - timeout'd
+						// 3.  dispatched and not done	(O)
+						// 4.  dispatched and done		(X)
+						if((!task_get_dispatched(task) && (task_get_status(task) != FAIL)) || // case 1
+						   ( task_get_dispatched(task) && !((task_get_status(task) == 100) || (task_get_status(task) == FAIL))) // case 3
+								) {
 							zlist_append(service->tasks, task); // Task not finished, need to take care of it
 							zlog_debug(self->log, "  Add task [%s] to dispatcher->tasks[%s] and wait for dispatch", task_get_taskID(task), service->name);
 						}
@@ -305,8 +313,6 @@ dispatcher_new()
     	PQclear(services);
 
     	// TODO: should we read out all the tasks that do not belong to any service?
-
-    	// TODO: service_dispatch_all right now?
     }
     else {
     	zlog_error(self->log, "Connection to database failed: %s", PQerrorMessage(self->dbconn));
@@ -388,6 +394,7 @@ DBExecCmd(PGconn *dbconn, pthread_mutex_t *lock, const char *cmd, ...)
 			PGresult *op = PQexec(dbconn, buf);
 			if(PQresultStatus(op) == PGRES_COMMAND_OK)
 				ret = 1;
+			PQclear(op);
 		}
 
 		// mutex_unlock
@@ -1008,34 +1015,33 @@ _service_dispatch(void *ptr)
 	}
 
     size_t count = zlist_size(self->tasks);
+    size_t total_count = count;
     if(count > 0)	zlog_debug(self->dispatcher->log, "[%s] service dispatching:", self->name);
     else			goto _service_dispatch_return;
-
-    size_t count2 = count;
 
     while(count-- > 0) {
         task_t *task = (task_t *)zlist_pop(self->tasks);
 
         if(task == NULL) {
-			zlog_error(self->dispatcher->log, "[%lu]: Error happens because task is NULL, total = %lu, task_size = %lu",
-					count+1, count2, zlist_size(self->tasks));
+			zlog_error(self->dispatcher->log, "[%lu]: Error happens because task is NULL, total = %lu, current_total = %lu",
+					count + 1, total_count, zlist_size(self->tasks));
 		}
 		else if(task_get_taskID(task) == NULL) {
-			zlog_error(self->dispatcher->log, "[%lu]: Error happens because taskID is NULL, total = %lu, task_size = %lu",
-					count+1, count2, zlist_size(self->tasks));
+			zlog_error(self->dispatcher->log, "[%lu]: Error happens because taskID is NULL, total = %lu, current_total = %lu",
+					count + 1, total_count, zlist_size(self->tasks));
 		}
 
-        // Task was done (i.e. dispatched is true and status is 100/FAIL), we don't need
-        // to take care of it anymore, remove it by not pushing back to task list
-        if(task_get_dispatched(task) && ((task_get_status(task) == 100) || (task_get_status(task) == FAIL)))
+        // Task was done (i.e. status is 100/FAIL), we don't need to take care
+        // of it anymore, remove it by not pushing back to task list.
+        // p.s. don't need to check dispatched or not is because timeout'd task
+        //      is FAIL but not dispatched
+        if(task_get_status(task) == 100 || task_get_status(task) == FAIL)
         	continue;
-        // FIXME: don't need to check dispatched or not, because timeout'd task's status is FAIL
-        // but not dispatched
 
         // If task is timeout'd, remove it by not pushing back to task list and change status to FAIL
         if(task_get_expired(task)) {
-        	zlog_info(self->dispatcher->log, "%lu: Task [%s] was timeout'd, change status to FAIL and no more dispatched, task_size = %lu",
-        			count+1, task_get_taskID(task), zlist_size(self->tasks));
+        	zlog_info(self->dispatcher->log, "[%lu]: Task [%s] was timeout'd, change status to FAIL and no more dispatched, current_total = %lu",
+        			count + 1, task_get_taskID(task), zlist_size(self->tasks));
         	task_set_status(task, FAIL);
 #ifdef SAVE_STATE_TO_DATABASE
         	// Update task status to FAIL in database
@@ -1051,12 +1057,12 @@ _service_dispatch(void *ptr)
 				zlog_error(self->dispatcher->log, "Update task [%s] status to FAIL(%d) to DB dispatcher.tasks failed: %s",
 						task_get_taskID(task), FAIL, PQerrorMessage(self->dispatcher->dbconn));
 #endif
-			continue;
+			continue; // Don't need to update task timeout in DB after task_get_expired() because nothing changed in task->timeout
         }
-        // Don't need to update task timeout in DB after task_get_expired() because nothing changed in task->timeout
+        // Task is not timeout'd, go on dispatching
         else {
-        	zlog_debug(self->dispatcher->log, "[%lu]: Task[%s] is not timeout'd, go on dispatching, task_size = %lu",
-        			count+1, task_get_taskID(task), zlist_size(self->tasks));
+        	zlog_debug(self->dispatcher->log, "[%lu]: Task[%s] is not timeout'd, go on dispatching, current_total = %lu",
+        			count + 1, task_get_taskID(task), zlist_size(self->tasks));
         }
 
         // If task wasn't done and not timeout'd, check if the task
@@ -1209,12 +1215,18 @@ int main(int argc, char **argv)
 {
 //	test_serialization();
 
-	if(argc != 2) {
-		printf("Usage: %s tcp://*:<port>\n", argv[0]);
+	if(argc != 7) {
+		printf("Usage: wsdispatcher tcp://<ip>:<port> <dbip> <dbport> <dbname> <dbuser> <dbpwd>\n");
+		printf("  <ip>:<port> - wsdispatcher bind address\n");
+		printf("  <dbip> - database IP\n");
+		printf("  <dbport> - database port\n");
+		printf("  <dbname> - database name\n");
+		printf("  <dbuser> - database user name\n");
+		printf("  <dbpwd> - database user password\n");
 		return 1;
 	}
 
-	dispatcher_t *self = dispatcher_new();
+	dispatcher_t *self = dispatcher_new(argv[2], argv[3], argv[4], argv[5], argv[6]);
 	if(!self) return 1;
 	zsocket_bind(self->socket, argv[1]);
 	zlog_info(self->log, "Bind to %s", argv[1]);
@@ -1293,8 +1305,6 @@ int main(int argc, char **argv)
 	if (zctx_interrupted) {
 		zlog_info(self->log, "Interrupt received, shutting down...");
 		zhash_foreach(self->workers, &disconnect_all_workers, NULL); // Send DISCONNECT to all connected workers
-
-		// TODO: backup database to persistence storage
 	}
 
 	dispatcher_destroy(&self);
