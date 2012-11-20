@@ -58,8 +58,11 @@ timeout_t*		timeout_deserialize(serialize_t *buf);
 void			timeout_destroy(timeout_t **self_p);
 void			timeout_print(timeout_t *self);
 uint64_t		timeout_get_old(timeout_t *self);
+void			timeout_set_old(timeout_t *self, uint64_t _old);
 uint64_t		timeout_get_new(timeout_t *self);
+void			timeout_set_new(timeout_t *self, uint64_t _new);
 uint64_t		timeout_get_interval(timeout_t *self);
+void			timeout_set_interval(timeout_t *self, uint64_t _interval);
 
 // ---------------------------------------------------------------------
 typedef struct _heartbeat_t heartbeat_t;
