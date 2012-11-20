@@ -14,6 +14,27 @@ struct _client_t {
     pthread_mutex_t*	send_lock;
 };
 
+// Connect/reconnect to dispatcher
+static void
+_client_connect_to_dispatcher(client_t *self)
+{
+	if(self) {
+		if(self->socket)
+			zsocket_destroy(self->ctx, self->socket);
+		if(!(self->socket = zsocket_new(self->ctx, ZMQ_DEALER))) {
+			zlog_error(self->log, "zsocket_new() return NULL, create socket failed");
+			return;
+		}
+		zmq_setsockopt(self->socket, ZMQ_IDENTITY, self->hostName, strlen(self->hostName));
+		if(zmq_connect(self->socket, self->dispatcher) == 0) {
+			zlog_info(self->log, "Connecting to dispatcher at %s...", self->dispatcher);
+		}
+		else {
+			zlog_info(self->log, "Failed in zmq_connect(), error code = %d", errno);
+		}
+	}
+}
+
 // Receive message from dispatcher for $wait_t milliseconds, return command
 // code and subsequent data. This method tries to wait for message base on
 // $wait_t. If any legal message received will return IMMEDIATELY, it means
@@ -199,8 +220,13 @@ _client_req(client_t *self, int type, int arg_length, ...)
 
 		if(!quit) {
 			remain = timeout_remain(t);
-			if(remain > 0)	zlog_info(self->log, "Still %u milliseconds remain, go on receiving", remain);
-			else			quit = 1;
+			if(remain > 0)	{
+				zlog_info(self->log, "Still %u milliseconds remain, go on receiving", remain);
+			}
+			else { // timeout'd, reconnect to dispatcher
+				_client_connect_to_dispatcher(self);
+				quit = 1;
+			}
 		}
 	}
 	timeout_destroy(&t);
@@ -239,12 +265,7 @@ client_create (char *dispatcher)
 	}
 	else
 		zlog_debug(self->log, "Failed to allocate memory for send_lock");
-	self->socket = zsocket_new(self->ctx, ZMQ_DEALER);
-    zmq_setsockopt(self->socket, ZMQ_IDENTITY, self->hostName, strlen(self->hostName));
-    if(zmq_connect (self->socket, self->dispatcher) == 0)
-    	zlog_info(self->log, "Connecting to dispatcher at %s...", self->dispatcher);
-    else
-    	zlog_info(self->log, "Failed in zmq_connect(), error code = %d", errno);
+	_client_connect_to_dispatcher(self);
     return self;
 }
 
