@@ -465,6 +465,12 @@ timeout_get_old(timeout_t *self)
 	else	return 0;
 }
 
+void
+timeout_set_old(timeout_t *self, uint64_t _old)
+{
+	if(self)self->_old = _old;
+}
+
 uint64_t
 timeout_get_new(timeout_t *self)
 {
@@ -472,11 +478,23 @@ timeout_get_new(timeout_t *self)
 	else	return 0;
 }
 
+void
+timeout_set_new(timeout_t *self, uint64_t _new)
+{
+	if(self)self->_new = _new;
+}
+
 uint64_t
 timeout_get_interval(timeout_t *self)
 {
 	if(self)return self->_interval;
 	else	return 0;
+}
+
+void
+timeout_set_interval(timeout_t *self, uint64_t _interval)
+{
+	if(self)self->_interval = _interval;
 }
 
 struct _heartbeat_t {
