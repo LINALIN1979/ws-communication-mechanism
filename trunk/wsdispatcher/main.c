@@ -74,6 +74,7 @@ typedef struct {
 	dispatcher_t	*dispatcher;	// Dispatcher instance
     char			*hostName;		// Identity of worker
     zframe_t		*address;		// Address frame of worker, which assist dispatcher to route message to
+    char			*address_str;
     service_t		*service;		// Point to service_t
 
     heartbeat_t		*heartbeat;
@@ -204,6 +205,7 @@ dispatcher_new(char *dbip, char *dbport, char *dbname, char *dbuser, char *dbpwd
 					if(PQresultStatus(workers) == PGRES_TUPLES_OK) {
 						int tuples_workers = PQntuples(workers);
 						int name_fnum				 = PQfnumber(workers, "name");
+						int address_fnum		 	 = PQfnumber(workers, "address");
 						int heartbeat_deadtime_fnum	 = PQfnumber(workers, "heartbeat_deadtime");
 						int heartbeat_keepalive_fnum = PQfnumber(workers, "heartbeat_keepalive");
 						int timeout_old_fnum		 = PQfnumber(workers, "timeout_old");
@@ -218,7 +220,8 @@ dispatcher_new(char *dbip, char *dbport, char *dbname, char *dbuser, char *dbpwd
 							worker->dispatcher = self;
 							worker->hostName = strdup(PQgetvalue(workers, index_workers, name_fnum));
 							worker->service = service;
-							worker->address = zframe_new(worker->hostName, strlen(worker->hostName));
+							worker->address_str = strdup(PQgetvalue(workers, index_workers, address_fnum));
+							worker->address = zframe_new(worker->address_str, strlen(worker->address_str));
 							char *tmp = PQgetvalue(workers, index_workers, heartbeat_deadtime_fnum);
 							uint64_t heartbeat_deadtime = atoul(tmp, strlen(tmp), 10);
 							tmp = PQgetvalue(workers, index_workers, heartbeat_keepalive_fnum);
@@ -341,31 +344,32 @@ dispatcher_new(char *dbip, char *dbport, char *dbname, char *dbuser, char *dbpwd
 static void
 dispatcher_destroy(dispatcher_t **self_p)
 {
-    assert(self_p);
-    if(*self_p) {
-    	dispatcher_t *self = *self_p;
-        if(self->ctx)		zctx_destroy(&self->ctx);
-        if(self->services)	zhash_destroy(&self->services);
-        if(self->workers)	zhash_destroy(&self->workers);
-        if(self->tasks)		zhash_destroy(&self->tasks);
+	assert(self_p);
+	if(*self_p) {
+		dispatcher_t *self = *self_p;
+		if(self->ctx)		zctx_destroy(&self->ctx);
+		if(self->services)	zhash_destroy(&self->services);
+		if(self->workers)	zhash_destroy(&self->workers);
+		if(self->tasks)		zhash_destroy(&self->tasks);
 #ifdef SAVE_STATE_TO_DATABASE
-        PQfinish(self->db->db_conn);
-        timeout_destroy(&self->db->db_ping_timeout);
-        FREE(self->db->db_login_info);
+		PQfinish(self->db->db_conn);
+		timeout_destroy(&self->db->db_ping_timeout);
+		FREE(self->db->db_login_info);
  #if defined TASKPROC_IN_MULTITHREAD
-       pthread_mutex_destroy(&(self->db->db_write_lock));
+		pthread_mutex_destroy(&(self->db->db_write_lock));
  #endif
+		FREE(self->db);
 #endif
 #ifdef TASKPROC_IN_MULTITHREAD
-        if(self->threads) {
-        	threadpool_destroy(self->threads, 0);
-        	pthread_mutex_destroy(&(self->sock_lock));
-        }
+		if(self->threads) {
+			threadpool_destroy(self->threads, 0);
+			pthread_mutex_destroy(&(self->sock_lock));
+		}
 #endif
-        zlog_fini();
-        FREE(self);
-        *self_p = NULL;
-    }
+		zlog_fini();
+		FREE(self);
+		*self_p = NULL;
+	}
 }
 
 static void
@@ -517,6 +521,7 @@ worker_destroy(void *argument)
 			free(worker->hostName);
 		}
     	if(worker->address)	zframe_destroy(&worker->address);
+    	FREE(worker->address_str);
     	heartbeat_destroy(&worker->heartbeat);
     	free(worker);
     }
@@ -669,8 +674,8 @@ process_msg_from_client (dispatcher_t *self, zframe_t *sender, zmsg_t *msg)
 			// To specific worker
 			if((delimiter != NULL) && (*(delimiter + 1) != '\0')) {
 				int serviceName_length = delimiter - workers;
-				serviceName = (char *)zmalloc(sizeof(char) * serviceName_length);
-				strncpy(serviceName, workers, serviceName_length);
+				serviceName = (char *)zmalloc(sizeof(char) * (serviceName_length + 1));
+				memcpy(serviceName, workers, serviceName_length);
 				serviceName[serviceName_length] = '\0';
 				zlog_info(self->log, "Receive TASKDIRECTREQ, to specific worker [%s], service type [%s]", workers, serviceName);
 
@@ -686,6 +691,7 @@ process_msg_from_client (dispatcher_t *self, zframe_t *sender, zmsg_t *msg)
 					_sendcmd(self, sender,
 							3, cmd_code2payload(TASKDIRECTREP), token, "");
 				}
+				FREE(serviceName);
 			}
 			// Service only
 			else {
@@ -759,6 +765,11 @@ process_msg_from_worker (dispatcher_t *self, zframe_t *sender, zmsg_t *msg)
 
     // 2. Lookup worker exists or not by identity
     char *hostName = zframe_strdup(sender);
+    char *hostName_delimiter = strchr(hostName, '-');
+    if(hostName_delimiter != NULL) {
+    	*hostName_delimiter = '\0';
+    	hostName_delimiter++;
+    }
     worker_t *worker = zhash_lookup(self->workers, hostName);
     int worker_exists = (worker) ? 1 : 0;
 
@@ -788,6 +799,7 @@ process_msg_from_worker (dispatcher_t *self, zframe_t *sender, zmsg_t *msg)
 					free(service_name);
 				}
 				worker->address = zframe_dup(sender);
+				worker->address_str = zframe_strdup(worker->address);
 				worker->heartbeat = heartbeat_create(HEARTBEAT_LIVEING, HEARTBEAT_INTERVAL, _heartbeat_sendfn, (void *)worker);
 				zhash_insert(self->workers, hostName, worker);
 				zhash_freefn(self->workers, hostName, worker_destroy);
@@ -800,11 +812,11 @@ process_msg_from_worker (dispatcher_t *self, zframe_t *sender, zmsg_t *msg)
 				if(DBExecCmd(self->db,
  #endif
 						"INSERT INTO dispatcher.workers \
-						(name, service_name, \
+						(name, service_name, address, \
 						heartbeat_deadtime, heartbeat_keepalive, \
 						timeout_old, timeout_new, timeout_interval, retries) \
-						VALUES ('%s', '%s', %lu, %lu, %lu, %lu, %lu, %d)",
-						worker->hostName, worker->service->name,
+						VALUES ('%s', '%s', '%s', %lu, %lu, %lu, %lu, %lu, %d)",
+						worker->hostName, worker->service->name, worker->address_str,
 						heartbeat_get_deadtime(worker->heartbeat), heartbeat_get_keepalive(worker->heartbeat),
 						timeout_get_old(heartbeat_get_timeout(worker->heartbeat)),
 						timeout_get_new(heartbeat_get_timeout(worker->heartbeat)),

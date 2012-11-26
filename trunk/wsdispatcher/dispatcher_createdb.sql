@@ -26,6 +26,7 @@ CREATE TABLE services (
 CREATE TABLE workers (
 	name			text			PRIMARY KEY,
 	service_name		text			REFERENCES services ON DELETE SET NULL,
+	address			text			NOT NULL,
 
 	-- heartbeat
 --	heartbeat_deadtime	BIGINT_UNSIGNED,
