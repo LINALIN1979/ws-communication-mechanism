@@ -25,6 +25,9 @@ _client_connect_to_dispatcher(client_t *self)
 			zlog_error(self->log, "zsocket_new() return NULL, create socket failed");
 			return;
 		}
+		FREE(self->hostName);
+		self->hostName = (char *)zmalloc(sizeof(char) * 13);
+		rand_str(self->hostName, 12);
 		zmq_setsockopt(self->socket, ZMQ_IDENTITY, self->hostName, strlen(self->hostName));
 		if(zmq_connect(self->socket, self->dispatcher) == 0) {
 			zlog_info(self->log, "Connecting to dispatcher at %s...", self->dispatcher);
@@ -252,8 +255,8 @@ client_create (char *dispatcher)
 		printf("zlog_get_category() failed\n");
 	zlog_info(self->log, "Creating client...");
     self->ctx = zctx_new ();
-    self->hostName = (char *)zmalloc(sizeof(char) * 13);
-	rand_str(self->hostName, 12);
+    //self->hostName = (char *)zmalloc(sizeof(char) * 13);
+	//rand_str(self->hostName, 12);
     self->dispatcher = strdup(dispatcher);
     self->recvWaitTimeout = RECV_WAIT_TIMEOUT;
     self->send_lock = (pthread_mutex_t *)zmalloc(sizeof(pthread_mutex_t));
