@@ -50,7 +50,25 @@ _worker_connect_to_dispatcher(worker_t *self)
 			zlog_error(self->log, "zsocket_new() return NULL, create socket failed");
 			return;
 		}
-		zmq_setsockopt(self->socket, ZMQ_IDENTITY, self->hostName, strlen(self->hostName));
+
+		// ----
+		// Add "-XXXXXXXX" (XXXXXXXX is a random string) after hostName
+		// when setup socket identity.
+		// This is the workaround solution of the issue when reconnect to
+		// ROUTER with same identity, ROUTER will refuse the connection.
+		int hostName_len = strlen(self->hostName);
+		char *identity = (char*)zmalloc(sizeof(char) * (hostName_len + 10));
+		if(identity) {
+			memcpy(identity, self->hostName, hostName_len);
+			identity[hostName_len] = '-';
+			rand_str(identity + hostName_len + 1, 8);
+			zmq_setsockopt(self->socket, ZMQ_IDENTITY, identity, strlen(identity));
+			free(identity);
+		}
+		else
+			zmq_setsockopt(self->socket, ZMQ_IDENTITY, self->hostName, hostName_len + 9);
+		// ----
+
 		if(zmq_connect(self->socket, self->dispatcher) == 0) {
 			zlog_info(self->log, "Connect to dispatcher at %s...success", self->dispatcher);
 			zlog_info(self->log, "Send SERVICEREGREQ to dispatcher");
