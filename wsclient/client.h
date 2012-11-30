@@ -66,6 +66,8 @@ char*			client_opshort(client_t *self, char *workers, char *method, char *data);
 // Return value of client_querytask. Normal case should return
 // task percentage 0~100.
 #define	TASK_DISPATCHING	901
+#define TASK_RECV_TIMEOUT	903
+#define TASK_RECV_TIMEOUT_STR	"903"
 #define TASK_FAIL			904
 #define TASK_NOTFOUND		402
 
