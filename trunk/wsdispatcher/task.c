@@ -20,6 +20,7 @@ struct _task_t {
 	char			*client_str;
 	zframe_t		*worker;		// worker address who handles the task
 	char			*worker_str;
+	int				assigned_worker;
 };
 
 int
@@ -147,6 +148,7 @@ task_create(char *service_name, zframe_t *client, char *method, char *data, zfra
 
 		task_set_client(task, client);
 		task_set_worker(task, worker); // If has specific worker, assigned here. If no, service_dispatch() will handle it
+		task->assigned_worker = (!worker) ? 0 : 1;
 
 		timeout_update(task->timeout);
 	}
@@ -157,7 +159,7 @@ task_t *
 task_create_manually(char *taskID, unsigned int status, int dispatched,
 		uint64_t createTime, uint64_t timeout_old, uint64_t timeout_new, uint64_t timeout_interval,
 		char *serviceName, char *method, char *data,
-		char *client_str, char *worker_str)
+		char *client_str, char *worker_str, int assigned_worker)
 {
 	task_t *task = (task_t *)zmalloc(sizeof(task_t));
 	if(task) {
@@ -178,6 +180,7 @@ task_create_manually(char *taskID, unsigned int status, int dispatched,
 
 		task->worker_str = strdup(worker_str);
 		task->worker = zframe_new(task->worker_str, strlen(task->worker_str));
+		task->assigned_worker = assigned_worker;
 	}
 	return task;
 }
@@ -393,4 +396,11 @@ task_print(task_t * self)
 		printf("  worker_str = %s\n", self->worker_str);
 		timeout_print(task_get_timeout(self));
 	}
+}
+
+int
+task_get_assigned_worker(task_t *self)
+{
+	if(self)return self->assigned_worker;
+	else	return -1;
 }
