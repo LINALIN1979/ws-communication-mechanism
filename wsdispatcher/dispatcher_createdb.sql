@@ -66,5 +66,6 @@ CREATE TABLE tasks (
 	method			text			NOT NULL,
 	data			text,
 	client_str		text			NOT NULL,
-	worker_str		text
+	worker_str		text,
+	assigned_worker	text			NOT NULL
 );

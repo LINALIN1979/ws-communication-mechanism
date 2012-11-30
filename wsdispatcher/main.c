@@ -6,7 +6,7 @@
 					// definition to make compiler see strdup from string.h. Or to
 					// remove "-ansi" from compiler option
 
-#define TASKPROC_IN_MULTITHREAD	// Toggle of multi-thread supprt
+//#define TASKPROC_IN_MULTITHREAD	// Toggle of multi-thread supprt
 #define SAVE_STATE_TO_DATABASE	// Toggle of save state to database
 
 #include "../wscommon/protocol.h"
@@ -17,7 +17,7 @@
 #endif
 
 
-#define HEARTBEAT_LIVEING	15000	// If doesn't receive peer heartbeat exceeds this period, will treat as dead
+#define HEARTBEAT_LIVEING	120000	// If doesn't receive peer heartbeat exceeds this period, will treat as dead
 #define HEARTBEAT_INTERVAL  3000	// Heartbeat sending interval (in millisecond)
 
 // ==========================================================
@@ -145,7 +145,7 @@ static dispatcher_t *
 dispatcher_new(char *dbip, char *dbport, char *dbname, char *dbuser, char *dbpwd)
 {
 	dispatcher_t *self = (dispatcher_t *) zmalloc (sizeof (dispatcher_t));
-	zlog_init("log.conf");
+	zlog_init("/etc/wslog.conf");
 	self->log = zlog_get_category("dispatcher");
 	if(!self->log)
 		printf("zlog_get_category() failed\n");
@@ -272,6 +272,7 @@ dispatcher_new(char *dbip, char *dbport, char *dbname, char *dbuser, char *dbpwd
 						int data_fnum				 = PQfnumber(tasks, "data");
 						int client_str_fnum			 = PQfnumber(tasks, "client_str");
 						int worker_str_fnum			 = PQfnumber(tasks, "worker_str");
+						int assigned_worker_fnum	 = PQfnumber(tasks, "assigned_worker");
 						for(int index_tasks = 0; index_tasks < tuples_tasks; index_tasks++) {
 							// create task_t to store and put into
 							// 1. self->tasks: maybe recover all task at once later
@@ -289,10 +290,12 @@ dispatcher_new(char *dbip, char *dbport, char *dbname, char *dbuser, char *dbpwd
 							uint64_t timeout_interval = atoul(tmp, strlen(tmp), 10);
 							tmp = PQgetvalue(tasks, index_tasks, create_time_fnum);
 							uint64_t createTime = atoul(tmp, strlen(tmp), 10);
+							tmp = PQgetvalue(tasks, index_tasks, assigned_worker_fnum);
+							int assigned_worker = atoi(tmp);
 							task_t *task = task_create_manually(PQgetvalue(tasks, index_tasks, taskID_fnum), status, dispatched,
 									createTime, timeout_old, timeout_new, timeout_interval,
 									service->name, PQgetvalue(tasks, index_tasks, method_fnum), PQgetvalue(tasks, index_tasks, data_fnum),
-									PQgetvalue(tasks, index_tasks, client_str_fnum), PQgetvalue(tasks, index_tasks, worker_str_fnum));
+									PQgetvalue(tasks, index_tasks, client_str_fnum), PQgetvalue(tasks, index_tasks, worker_str_fnum), assigned_worker);
 							zhash_insert(self->tasks, task_get_taskID(task), task);
 							zhash_freefn(self->tasks, task_get_taskID(task), task_destroy);
 
@@ -589,11 +592,11 @@ process_msg_from_client (dispatcher_t *self, zframe_t *sender, zmsg_t *msg)
  #endif
 						"INSERT INTO dispatcher.tasks (taskID, status, dispatched, \
 						create_time, timeout_old, timeout_new, timeout_interval, \
-						service_name, method, data, client_str, worker_str) \
-						VALUES ('%s', %d, %d, %lu, %lu, %lu, %lu, '%s', '%s', '%s', '%s', '%s')",
+						service_name, method, data, client_str, worker_str, assigned_worker) \
+						VALUES ('%s', %d, %d, %lu, %lu, %lu, %lu, '%s', '%s', '%s', '%s', '%s', %d)",
 						task_get_taskID(task), task_get_status(task), task_get_dispatched(task),
 						task_get_createTime(task), timeout_get_old(task_get_timeout(task)), timeout_get_new(task_get_timeout(task)), timeout_get_interval(task_get_timeout(task)),
-						task_get_serviceName(task), task_get_method(task),task_get_data(task), task_get_client_str(task), task_get_worker_str(task)
+						task_get_serviceName(task), task_get_method(task),task_get_data(task), task_get_client_str(task), task_get_worker_str(task), task_get_assigned_worker(task)
 						))
 					zlog_debug(self->log, "Insert task ID [%s] to DB dispatcher.tasks success", task_get_taskID(task));
 				else
@@ -778,14 +781,39 @@ process_msg_from_worker (dispatcher_t *self, zframe_t *sender, zmsg_t *msg)
     // Got service registration request
     case SERVICEREGREQ:
     	if (worker_exists) {
-    		// SERVICEREGREQ is for newly created session but worker already registered.
-    		// Case 1: This is an corrupted session, disconnect worker and remove it.
-    		zlog_info(self->log, "Receive SERVICEREGREQ from already existed worker [%s], disconnect it due to session corruption", hostName);
-    		_sendcmd(self, worker->address, 2, cmd_code2payload(SERVICEREGREP), stat_code2payload(S_EXISTED));
-    		worker_delete(worker, 1);
+//    		// SERVICEREGREQ is for newly created session but worker already registered.
+//    		// Case 1: This is an corrupted session, disconnect worker and remove it.
+//    		zlog_info(self->log, "Receive SERVICEREGREQ from already existed worker [%s], disconnect it due to session corruption", hostName);
+//    		_sendcmd(self, worker->address, 2, cmd_code2payload(SERVICEREGREP), stat_code2payload(S_EXISTED));
+//    		worker_delete(worker, 1);
+//
+//    		// TODO: what will happen if two nodes to register the same name??
+//    		// TODO: Case 2: If we have authorization phase, should try to authorize again
 
-    		// TODO: what will happen if two nodes to register the same name??
-    		// TODO: Case 2: If we have authorization phase, should try to authorize again
+    		if(is_zmsg_size_enough(self->log, msg, 1)) {
+    			worker->address = zframe_dup(sender);
+    			worker->address_str = zframe_strdup(worker->address);
+#ifdef SAVE_STATE_TO_DATABASE
+				// Add worker to database
+ #if defined TASKPROC_IN_MULTITHREAD
+				if(DBExecCmd(self->db,
+ #else
+				if(DBExecCmd(self->db,
+ #endif
+						"UPDATE dispatcher.tasks SET \
+						address='%s' \
+						WHERE name='%s'",
+						worker->address_str, worker->hostName
+						))
+					zlog_debug(self->log, "Update worker [%s] to DB dispatcher.workers success", worker->hostName);
+				else
+					zlog_error(self->log, "Upate worker [%s] to DB dispatcher.workers failed: %s", worker->hostName, PQerrorMessage(self->db->db_conn));
+#endif
+
+				_sendcmd(self, worker->address,	2, cmd_code2payload(SERVICEREGREP), stat_code2payload(S_OK)); // reply worker registration success
+				zlog_info(self->log, "Receive SERVICEREGREQ from previous connected worker [%s] and register service type [%s], register success", worker->hostName, worker->service->name);
+
+    		}
     	}
 		else {
 			if(is_zmsg_size_enough(self->log, msg, 1)) {
@@ -1153,6 +1181,46 @@ _service_dispatch(void *ptr)
 				zlist_append(self->workers, worker); // push worker back to on-duty list
 			}
 		}
+		// TODO: for the case that task was dispatched but assigned worker was dead
+		//       need to add one property in database
+		else { // task_get_dispatched(task) == TRUE
+			// task was dispatched but the owner worker was dead, there are two cases,
+			// 1. task was assigned to specific worker but it dies, set this task to FAIL
+			// 2. task only ask for service type, pick up a new one for him and reset timer
+			if(task_get_worker(task)) { // tasks get dispatched are all have worker assigned
+				if(zhash_lookup(self->dispatcher->workers, task_get_worker_str(task)) == NULL) {
+					// worker was dead...
+					// case 1
+					if(task_get_assigned_worker(task)) {
+						zlog_info(self->dispatcher->log, "[%lu]: Task [%s] asked to specific worker but dies, change status to FAIL and no more dispatched, current_total = %lu",
+								count + 1, task_get_taskID(task), zlist_size(self->tasks));
+						task_set_status(task, FAIL);
+#ifdef SAVE_STATE_TO_DATABASE
+						// Update task status to FAIL in database
+ #if defined TASKPROC_IN_MULTITHREAD
+						if(DBExecCmd(self->dispatcher->db,
+ #else
+						if(DBExecCmd(self->dispatcher->db,
+ #endif
+								"UPDATE dispatcher.tasks SET status=%d WHERE taskID='%s'", FAIL, task_get_taskID(task)))
+							zlog_debug(self->dispatcher->log, "Update task [%s] status to FAIL(%d) to DB dispatcher.tasks success",
+									task_get_taskID(task), FAIL);
+						else
+							zlog_error(self->dispatcher->log, "Update task [%s] status to FAIL(%d) to DB dispatcher.tasks failed: %s",
+									task_get_taskID(task), FAIL, PQerrorMessage(self->dispatcher->db->db_conn));
+#endif
+						continue; // no need to push back because specific worker was dead
+					}
+					// case 2
+					else {
+						zlog_info(self->dispatcher->log, "[%lu]: Task [%s] was assigned by service type but worker was dead, redispatch it, current_total = %lu",
+								count + 1, task_get_taskID(task), zlist_size(self->tasks));
+						task_set_dispatched(task, 0); // wait for next _service_dispatch() to process
+					}
+				}
+			}
+		}
+		// TODO: ---
         zlist_append(self->tasks, task); // push task back to the end of task list
     }
 
