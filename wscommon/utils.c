@@ -212,26 +212,29 @@ sendcmd(pthread_mutex_t *lock, zlog_category_t* log, void *socket, char *from, i
 	zmsg_pushstr(msg, "");
 //	zlog_debug(log, "sendcmd: pushstr empty start");
 
-	zlog_debug(log, "Sending...");
-	dumpzmsg(log, msg);
+	if(log) {
+		zlog_debug(log, "Sending...");
+		dumpzmsg(log, msg);
+	}
 
 	// lock mutex if any
 	if(lock) {
 		if(pthread_mutex_lock(lock) != 0) {
-			zlog_error(log, "Unable to lock mutex in sendcmd(), do not send message");
+			if(log) zlog_error(log, "Unable to lock mutex in sendcmd(), do not send message");
 			return;
 		}
 	}
 
 //	zlog_debug(log, "sendcmd: zmsg_send() start");
-	if(zmsg_send(&msg, socket))
-		zlog_error(log, "Failed to send in zmsg_send(), error code = %d", errno);
+	if(zmsg_send(&msg, socket)) {
+		if(log) zlog_error(log, "Failed to send in zmsg_send(), error code = %d", errno);
+	}
 //	zlog_debug(log, "sendcmd: zmsg_send() done");
 
 	// unlock mutex if any
 	if(lock) {
 		if(pthread_mutex_unlock(lock) != 0) {
-			zlog_error(log,"Failed to unlock mutex in sendcmd(), subsequent messages may be blocked");
+			if(log) zlog_error(log,"Failed to unlock mutex in sendcmd(), subsequent messages may be blocked");
 			return;
 		}
 	}
