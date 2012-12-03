@@ -1215,7 +1215,8 @@ _service_dispatch(void *ptr)
 					else {
 						zlog_info(self->dispatcher->log, "[%lu]: Task [%s] was assigned by service type but worker was dead, redispatch it, current_total = %lu",
 								count + 1, task_get_taskID(task), zlist_size(self->tasks));
-						task_set_dispatched(task, 0); // wait for next _service_dispatch() to process
+						task_set_worker(task, NULL);	// clean up assigned worker
+						task_set_dispatched(task, 0);	// wait for next _service_dispatch() to process
 					}
 				}
 			}
