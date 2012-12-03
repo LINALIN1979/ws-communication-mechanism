@@ -149,29 +149,15 @@ serialize_w_str(serialize_t *self, char *src)
 int
 serialize_w_done(serialize_t *self)
 {
-//	char *tmp = NULL;
-//	if(self) {
-//		int hdr_size = strlen(_SERIALIZE_DELIMITER) + 16;
-//		tmp = (char *)zmalloc(sizeof(char) * (hdr_size + self->_buf_pos + 1)); // 1 (for '\0') + 16 + strlen(_SERIALIZE_DELIMITER)
-//		if(tmp) {
-//			snprintf(tmp, hdr_size + 1, "%s%016lx", _SERIALIZE_DELIMITER, self->_buf_pos);
-//			memcpy(tmp + hdr_size, self->_buf, self->_buf_pos);
-//			self->_buf[hdr_size + self->_buf_pos] = '\0';
-//		}
-//	}
-//	return tmp;
-
 	if(self) {
 		int hdr_size = strlen(_SERIALIZE_DELIMITER) + 16;
 		if(_adjust_serialize_buf(self, hdr_size) == 0) {
 			char *hdr = (char *)zmalloc(sizeof(char) * hdr_size);
 			if(hdr) {
-				snprintf(hdr, hdr_size + 1, "%s%016lx", _SERIALIZE_DELIMITER, self->_buf_pos);
 				memmove(self->_buf + hdr_size, self->_buf, self->_buf_pos);
-				memcpy(self->_buf, hdr, hdr_size);
+				snprintf(self->_buf, hdr_size + 1, "%s%016lx", _SERIALIZE_DELIMITER, self->_buf_pos);
 				self->_buf_pos += hdr_size;
 				self->_buf[self->_buf_pos] = '\0';
-				free(hdr);
 				return 0;
 			}
 		}
