@@ -7,7 +7,7 @@ void
 fake_client_request(void *ptr)
 {
 	printf("oplong: ");
-	char *taskid = client_oplong(session, "time.1", "method:time", "what time is it?");
+	char *taskid = client_oplong(session, "time", "method:time", "what time is it?");
 	if(taskid) {
 		int quit = 0;
 		unsigned int percentage;
@@ -18,6 +18,11 @@ fake_client_request(void *ptr)
 			{
 			case 100:
 				printf(" Task done!\n");
+				quit = 1;
+				break;
+
+			case TASK_RECV_TIMEOUT:
+				printf(" Task recv timeout!\n");
 				quit = 1;
 				break;
 
@@ -40,7 +45,7 @@ fake_client_request(void *ptr)
 	}
 
 	printf("opshort: ");
-	char *ret = client_opshort(session, "time", "method:time", "what time is it?");
+	char *ret = client_opshort(session, "time.1", "method:time", "what time is it?");
 	if(ret)	{ printf("%s\n", ret); free(ret); }
 	else	{ printf("fail\n"); }
 }
