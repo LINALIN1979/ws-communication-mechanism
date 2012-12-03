@@ -324,10 +324,16 @@ void
 task_set_worker(task_t *self, zframe_t *worker)
 {
 	if(self && worker) {
-		if(self->worker) zframe_destroy(&self->worker);
-		FREE(self->worker_str);
-		self->worker = zframe_dup(worker);
-		self->worker_str = zframe_strdup(self->worker);
+		if(self->worker) {
+			zframe_destroy(&self->worker);
+			self->worker = NULL;
+		}
+		if(self->worker_str)	free(self->worker_str);
+
+		if(worker) {
+			self->worker = zframe_dup(worker);
+			self->worker_str = zframe_strdup(self->worker);
+		}
 		timeout_update(self->timeout);
 	}
 }
@@ -336,10 +342,16 @@ void
 task_set_worker_str(task_t *self, char *worker_str)
 {
 	if(self && worker_str) {
-		if(self->worker) zframe_destroy(&self->worker);
-		FREE(self->worker_str);
-		self->worker_str = strdup(worker_str);
-		self->worker = zframe_new(self->worker_str, strlen(self->worker_str));
+		if(self->worker) {
+			zframe_destroy(&self->worker);
+			self->worker = NULL;
+		}
+		if(self->worker_str)	free(self->worker_str);
+
+		if(worker_str) {
+			self->worker_str = strdup(worker_str);
+			self->worker = zframe_new(self->worker_str, strlen(self->worker_str));
+		}
 		timeout_update(self->timeout);
 	}
 }
