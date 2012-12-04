@@ -3,7 +3,7 @@
 					// remove "-ansi" from compiler option
 #include "client.h"
 
-#define DOLOG
+#define DOLOG // !! DO NOT DEFINE DOLOG FOR REST API GATEWAY !!
 
 struct _client_t {
     zctx_t*		ctx;				// Our context
