@@ -1,6 +1,7 @@
 #include "task.h"
 #include "../wscommon/utils.h"
 #include "../wscommon/protocol.h"
+// TODO: consider only set_status could update timeout
 
 // structure of task
 struct _task_t {
@@ -250,7 +251,7 @@ task_set_dispatched(task_t *self, int dispatched)
 
 		if(dispatched <= 0)	self->dispatched = 0;
 		else				self->dispatched = 1;
-		timeout_update(self->timeout);
+		//timeout_update(self->timeout); // should we update timeout?
 	}
 }
 
@@ -276,7 +277,7 @@ task_set_client(task_t *self, zframe_t *client)
 		FREE(self->client_str);
 		self->client = zframe_dup(client);
 		self->client_str = zframe_strdup(self->client);
-		timeout_update(self->timeout);
+		//timeout_update(self->timeout); // should we update timeout?
 	}
 }
 
@@ -288,7 +289,7 @@ task_set_client_str(task_t *self, char *client_str)
 		FREE(self->client_str);
 		self->client_str = strdup(client_str);
 		self->client = zframe_new(self->client_str, strlen(self->client_str));
-		timeout_update(self->timeout);
+		//timeout_update(self->timeout); // should we update timeout?
 	}
 }
 
@@ -334,7 +335,7 @@ task_set_worker(task_t *self, zframe_t *worker)
 			self->worker = zframe_dup(worker);
 			self->worker_str = zframe_strdup(self->worker);
 		}
-		timeout_update(self->timeout);
+		//timeout_update(self->timeout); // should we update timeout?
 	}
 }
 
@@ -352,7 +353,7 @@ task_set_worker_str(task_t *self, char *worker_str)
 			self->worker_str = strdup(worker_str);
 			self->worker = zframe_new(self->worker_str, strlen(self->worker_str));
 		}
-		timeout_update(self->timeout);
+		//timeout_update(self->timeout); // should we update timeout?
 	}
 }
 
