@@ -6,7 +6,7 @@
 
 
 #define RECV_WAIT_TIMEOUT	100 	// default waiting timeout for receive message (zmq_poll)
-#define HEARTBEAT_LIVEING	120000	// If doesn't receive peer heartbeat exceeds this period, will treat as dead
+#define HEARTBEAT_LIVEING	15000	// If doesn't receive peer heartbeat exceeds this period, will treat as dead
 #define HEARTBEAT_INTERVAL  3000	// Heartbeat sending interval (in millisecond)
 
 #define WORKER_STATE_UNREGISTER		1

@@ -17,7 +17,7 @@
 #endif
 
 
-#define HEARTBEAT_LIVEING	120000	// If doesn't receive peer heartbeat exceeds this period, will treat as dead
+#define HEARTBEAT_LIVEING	15000	// If doesn't receive peer heartbeat exceeds this period, will treat as dead
 #define HEARTBEAT_INTERVAL  3000	// Heartbeat sending interval (in millisecond)
 
 // ==========================================================
