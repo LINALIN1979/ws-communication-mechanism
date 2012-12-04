@@ -800,7 +800,7 @@ process_msg_from_worker (dispatcher_t *self, zframe_t *sender, zmsg_t *msg)
  #else
 				if(DBExecCmd(self->db,
  #endif
-						"UPDATE dispatcher.tasks SET \
+						"UPDATE dispatcher.workers SET \
 						address='%s' \
 						WHERE name='%s'",
 						worker->address_str, worker->hostName
@@ -1094,10 +1094,12 @@ _service_dispatch(void *ptr)
         if(task == NULL) {
 			zlog_error(self->dispatcher->log, "[%lu]: Error happens because task is NULL, total = %lu, current_total = %lu",
 					count + 1, total_count, zlist_size(self->tasks));
+			continue;
 		}
 		else if(task_get_taskID(task) == NULL) {
 			zlog_error(self->dispatcher->log, "[%lu]: Error happens because taskID is NULL, total = %lu, current_total = %lu",
 					count + 1, total_count, zlist_size(self->tasks));
+			continue;
 		}
 
         // Task was done (i.e. status is 100/FAIL), we don't need to take care
@@ -1181,47 +1183,54 @@ _service_dispatch(void *ptr)
 				zlist_append(self->workers, worker); // push worker back to on-duty list
 			}
 		}
-		// TODO: for the case that task was dispatched but assigned worker was dead
-		//       need to add one property in database
+		// task was dispatched but the owner worker was dead, if task status is still under
+		// DISPATCHING, there are two cases
+		// 1. task was assigned to specific worker => set dispatched to 0 and wait for next dispatching
+		// 2. task only ask for service type => set dispatched to 0 and worker to null, then wait for
+		//    next dispatching
 		else { // task_get_dispatched(task) == TRUE
-			// task was dispatched but the owner worker was dead, there are two cases,
-			// 1. task was assigned to specific worker but it dies, set this task to FAIL
-			// 2. task only ask for service type, pick up a new one for him and reset timer
-			if(task_get_worker(task)) { // tasks get dispatched are all have worker assigned
+			if(task_get_worker(task)) { // this should be always true, dispatched tasks are all have worker assigned
 				if(zhash_lookup(self->dispatcher->workers, task_get_worker_str(task)) == NULL) {
 					// worker was dead...
-					// case 1
-					if(task_get_assigned_worker(task)) {
-						zlog_info(self->dispatcher->log, "[%lu]: Task [%s] asked to specific worker but dies, change status to FAIL and no more dispatched, current_total = %lu",
-								count + 1, task_get_taskID(task), zlist_size(self->tasks));
-						task_set_status(task, FAIL);
+					if(task_get_status(task) == DISPATCHING) {
+						// task status is DISPATCHING
+
+						// reset dispatched
+						task_set_dispatched(task, 0);
+						// tasks only ask for service type, remove worker and wait for next dispatching
+						if(task_get_assigned_worker(task) == 0) {
+							task_set_worker(task, NULL);
+							zlog_info(self->dispatcher->log, "[%lu]: Task [%s] was assigned by service type but worker was dead, reset dispatched to 0 and wait for next dispatching, current_total = %lu",
+									count + 1, task_get_taskID(task), zlist_size(self->tasks));
 #ifdef SAVE_STATE_TO_DATABASE
-						// Update task status to FAIL in database
- #if defined TASKPROC_IN_MULTITHREAD
-						if(DBExecCmd(self->dispatcher->db,
- #else
-						if(DBExecCmd(self->dispatcher->db,
- #endif
-								"UPDATE dispatcher.tasks SET status=%d WHERE taskID='%s'", FAIL, task_get_taskID(task)))
-							zlog_debug(self->dispatcher->log, "Update task [%s] status to FAIL(%d) to DB dispatcher.tasks success",
-									task_get_taskID(task), FAIL);
-						else
-							zlog_error(self->dispatcher->log, "Update task [%s] status to FAIL(%d) to DB dispatcher.tasks failed: %s",
-									task_get_taskID(task), FAIL, PQerrorMessage(self->dispatcher->db->db_conn));
+							// Update task dispatched to FAIL in database
+							if(DBExecCmd(self->dispatcher->db, "UPDATE dispatcher.tasks SET dispatched=%d, worker_str='%s' WHERE taskID='%s'",
+									task_get_dispatched(task), task_get_worker_str(task), task_get_taskID(task)))
+								zlog_debug(self->dispatcher->log, "Update task [%s] dispatched=%d and worker_str=null to DB dispatcher.tasks success",
+										task_get_taskID(task), task_get_dispatched(task));
+							else
+								zlog_error(self->dispatcher->log, "Update task [%s] dispatched=%d and worker_str=null to DB dispatcher.tasks failed: %s",
+										task_get_taskID(task), task_get_dispatched(task), PQerrorMessage(self->dispatcher->db->db_conn));
 #endif
-						continue; // no need to push back because specific worker was dead
-					}
-					// case 2
-					else {
-						zlog_info(self->dispatcher->log, "[%lu]: Task [%s] was assigned by service type but worker was dead, redispatch it, current_total = %lu",
-								count + 1, task_get_taskID(task), zlist_size(self->tasks));
-						task_set_worker(task, NULL);	// clean up assigned worker
-						task_set_dispatched(task, 0);	// wait for next _service_dispatch() to process
+						}
+						else {
+							zlog_info(self->dispatcher->log, "[%lu]: Task [%s] asked to specific worker but dies, reset dispatched to 0 and wait for next dispatching, current_total = %lu",
+									count + 1, task_get_taskID(task), zlist_size(self->tasks));
+#ifdef SAVE_STATE_TO_DATABASE
+							// Update task dispatched to FAIL in database
+							if(DBExecCmd(self->dispatcher->db, "UPDATE dispatcher.tasks SET dispatched=%d WHERE taskID='%s'",
+									task_get_dispatched(task), task_get_taskID(task)))
+								zlog_debug(self->dispatcher->log, "Update task [%s] dispatched=%d to DB dispatcher.tasks success",
+										task_get_taskID(task), task_get_dispatched(task));
+							else
+								zlog_error(self->dispatcher->log, "Update task [%s] dispatched=%d to DB dispatcher.tasks failed: %s",
+										task_get_taskID(task), task_get_dispatched(task), PQerrorMessage(self->dispatcher->db->db_conn));
+#endif
+						}
 					}
 				}
 			}
 		}
-		// TODO: ---
         zlist_append(self->tasks, task); // push task back to the end of task list
     }
 
