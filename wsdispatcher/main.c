@@ -807,7 +807,7 @@ process_msg_from_worker (dispatcher_t *self, zframe_t *sender, zmsg_t *msg)
 						))
 					zlog_debug(self->log, "Update worker [%s] to DB dispatcher.workers success", worker->hostName);
 				else
-					zlog_error(self->log, "Upate worker [%s] to DB dispatcher.workers failed: %s", worker->hostName, PQerrorMessage(self->db->db_conn));
+					zlog_error(self->log, "Update worker [%s] to DB dispatcher.workers failed: %s", worker->hostName, PQerrorMessage(self->db->db_conn));
 #endif
 
 				_sendcmd(self, worker->address,	2, cmd_code2payload(SERVICEREGREP), stat_code2payload(S_OK)); // reply worker registration success
@@ -883,7 +883,7 @@ process_msg_from_worker (dispatcher_t *self, zframe_t *sender, zmsg_t *msg)
  #else
 					if(DBExecCmd(worker->dispatcher->db,
  #endif
-							"UPDATE dispatcher.tasks SET status='0' WHERE taskID='%s'", taskid))
+							"UPDATE dispatcher.tasks SET status='0', dispatched='1' WHERE taskID='%s'", taskid))
 						zlog_debug(worker->dispatcher->log, "Update task [%s] status to [0%%] to DB dispatcher.tasks success", taskid);
 					else
 						zlog_error(worker->dispatcher->log, "Update task [%s] status to [0%%] to DB dispatcher.tasks failed: %s", taskid, PQerrorMessage(worker->dispatcher->db->db_conn));
@@ -900,7 +900,7 @@ process_msg_from_worker (dispatcher_t *self, zframe_t *sender, zmsg_t *msg)
  #else
 					if(DBExecCmd(worker->dispatcher->db,
  #endif
-							"UPDATE dispatcher.tasks SET status=%d WHERE taskID='%s'", FAIL, taskid))
+							"UPDATE dispatcher.tasks SET status=%d, dispatched='1' WHERE taskID='%s'", FAIL, taskid))
 						zlog_debug(worker->dispatcher->log, "Update task [%s] status to FAIL(%d) to DB dispatcher.tasks success", taskid, FAIL);
 					else
 						zlog_error(worker->dispatcher->log, "Update task [%s] status to FAIL(%d) to DB dispatcher.tasks failed: %s", taskid, FAIL, PQerrorMessage(worker->dispatcher->db->db_conn));
@@ -939,7 +939,7 @@ process_msg_from_worker (dispatcher_t *self, zframe_t *sender, zmsg_t *msg)
  #else
 				if(DBExecCmd(worker->dispatcher->db,
  #endif
-						"UPDATE dispatcher.tasks SET status=%d WHERE taskID='%s'", per, taskid))
+						"UPDATE dispatcher.tasks SET status=%d, dispatched='1' WHERE taskID='%s'", per, taskid))
 					zlog_debug(worker->dispatcher->log, "Update task [%s] status to [%3u%%] to DB dispatcher.tasks success", taskid, per);
 				else
 					zlog_error(worker->dispatcher->log, "Update task [%s] status to [%3u%%] to DB dispatcher.tasks failed: %s", taskid, per, PQerrorMessage(worker->dispatcher->db->db_conn));
@@ -1203,7 +1203,7 @@ _service_dispatch(void *ptr)
 							zlog_info(self->dispatcher->log, "[%lu]: Task [%s] was assigned by service type but worker was dead, reset dispatched to 0 and wait for next dispatching, current_total = %lu",
 									count + 1, task_get_taskID(task), zlist_size(self->tasks));
 #ifdef SAVE_STATE_TO_DATABASE
-							// Update task dispatched to FAIL in database
+							// Reset dispatched to 0 and remove worker_str
 							if(DBExecCmd(self->dispatcher->db, "UPDATE dispatcher.tasks SET dispatched=%d, worker_str='%s' WHERE taskID='%s'",
 									task_get_dispatched(task), task_get_worker_str(task), task_get_taskID(task)))
 								zlog_debug(self->dispatcher->log, "Update task [%s] dispatched=%d and worker_str=null to DB dispatcher.tasks success",
@@ -1217,7 +1217,7 @@ _service_dispatch(void *ptr)
 							zlog_info(self->dispatcher->log, "[%lu]: Task [%s] asked to specific worker but dies, reset dispatched to 0 and wait for next dispatching, current_total = %lu",
 									count + 1, task_get_taskID(task), zlist_size(self->tasks));
 #ifdef SAVE_STATE_TO_DATABASE
-							// Update task dispatched to FAIL in database
+							// Reset dispatched to 0
 							if(DBExecCmd(self->dispatcher->db, "UPDATE dispatcher.tasks SET dispatched=%d WHERE taskID='%s'",
 									task_get_dispatched(task), task_get_taskID(task)))
 								zlog_debug(self->dispatcher->log, "Update task [%s] dispatched=%d to DB dispatcher.tasks success",
